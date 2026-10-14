@@ -71,16 +71,21 @@ current item limit from the service once.
 
 **`mode: "auto"`** (the default) picks the path per file:
 
-1. Signed, when the signer can sign data items and the item fits the free tier.
-2. x402 otherwise, when the signer has `signTypedData` and `maxUsdc` is set.
-3. If a signed upload fails because the address cannot pay, or because the
-   wallet returns a signature that cannot sign a data item, it goes to x402,
-   and so does every later upload from that uploader. A wallet that refuses the
-   prompt is not asked to pay instead.
+1. x402, when the signer has no `signMessage` or no `recoverPublicKey`. This
+   is decided before anything is signed.
+2. Signed, when the item fits the free tier, or when the signer cannot pay
+   (no `signTypedData`, or no `maxUsdc`).
+3. x402 for anything larger.
+4. If a signed upload fails with `TurboPaymentError`, because the free quota is
+   spent and the address has too few credits, it goes to x402, and so does
+   every later upload from that uploader.
 
-A signer with only one path uses that path for every file. This keeps a Zora
-creator's usual upload, one image and one metadata file, free with no setup,
-and makes a larger file or a smart wallet work without code changes. Set
+Any other failure is thrown. That includes a `TurboSignerError`: a wallet that
+refuses the prompt, or a smart-contract wallet, whose signature cannot sign a
+data item. **For a smart-contract wallet, pass `mode: "x402"`.**
+
+This keeps a Zora creator's usual upload, one image and one metadata file,
+free with no setup, and makes a larger file work without code changes. Set
 `mode: "signed"` to never pay with USDC (to spend Turbo credits instead), or
 `mode: "x402"` to always pay.
 

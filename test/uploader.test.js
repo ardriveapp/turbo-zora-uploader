@@ -133,7 +133,7 @@ test("auto: a spent free quota falls back to x402, and later uploads go there di
   assert.deepEqual(fetch.paths().slice(4), [X402_ROUTE, X402_ROUTE]);
 });
 
-test("auto: a smart-contract wallet's signature falls back to x402", async () => {
+test("auto: a smart-contract wallet's signature is thrown, with the way out, and nothing is paid", async () => {
   const fetch = service();
   const smartWallet = {
     address: account.address,
@@ -141,9 +141,19 @@ test("auto: a smart-contract wallet's signature falls back to x402", async () =>
     recoverPublicKey,
     signTypedData: account.signTypedData,
   };
-  const res = await createTurboUploader({ signer: smartWallet, maxUsdc: 50_000n, fetch }).upload(jsonFile());
+  await assert.rejects(createTurboUploader({ signer: smartWallet, maxUsdc: 50_000n, fetch }).upload(jsonFile()), {
+    name: "TurboSignerError",
+    message: /mode: "x402"/,
+  });
+  assert.deepEqual(fetch.paths(), ["/v1/info"], "nothing reached /v1/tx or the x402 route");
+});
+
+test("x402 mode is the way out for a smart-contract wallet", async () => {
+  const fetch = service();
+  const smartWallet = { address: account.address, signMessage: async () => `0x${"ab".repeat(100)}`, recoverPublicKey, signTypedData: account.signTypedData };
+  const res = await createTurboUploader({ signer: smartWallet, mode: "x402", maxUsdc: 50_000n, fetch }).upload(jsonFile());
   assert.equal(res.url, `https://turbo-gateway.com/${X402_ID}`);
-  assert.deepEqual(fetch.paths(), ["/v1/info", X402_ROUTE, X402_ROUTE], "nothing reached /v1/tx");
+  assert.deepEqual(fetch.paths(), [X402_ROUTE, X402_ROUTE]);
 });
 
 test("auto: a wallet that refuses to sign is not asked to pay instead", async () => {

@@ -26,9 +26,9 @@ export interface TurboUploaderOptions {
   signer: TurboZoraSigner;
   /**
    * "auto" (default): signed when the signer can sign data items and the item
-   * fits the free tier, x402 otherwise. A signed upload that fails because the
-   * address cannot pay, or because the wallet cannot sign data items, goes to
-   * x402 when `maxUsdc` is set.
+   * fits the free tier, x402 otherwise. A signed upload that fails with
+   * TurboPaymentError goes to x402 when the signer can pay. A TurboSignerError
+   * is thrown: for a smart-contract wallet, pass "x402".
    */
   mode?: "auto" | "signed" | "x402";
   /** The most one x402 upload may pay, in USDC base units (6 decimals): 50000 is 0.05 USDC. Required for x402. */

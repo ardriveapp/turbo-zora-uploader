@@ -22,16 +22,6 @@ const MODES = ["auto", "signed", "x402"];
 const URIS = ["https", "ar"];
 
 /**
- * Whether a failed signed upload in auto mode goes to x402 instead. Both cases
- * mean nothing was uploaded:
- * - TurboPaymentError: the address has spent its free quota and holds no credits.
- * - TurboSignerError with no `cause`: the wallet answered, but with a signature
- *   that cannot sign a data item (a smart-contract wallet). A wallet that threw,
- *   such as a user rejecting the prompt, carries a `cause` and is not retried.
- */
-const fallsBackToX402 = (err) => err instanceof TurboPaymentError || (err instanceof TurboSignerError && err.cause === undefined);
-
-/**
  * @param {import("./index").TurboUploaderOptions} options
  * @returns {import("./index").TurboUploader}
  */
@@ -80,7 +70,7 @@ function createTurboUploader(options = {}) {
   // The free item size is service policy (testnet's is larger), so it is read from /v1/info and kept.
   let freeLimit;
 
-  // After one fallback, later uploads go to x402 directly rather than asking the wallet again.
+  // After one fallback, later uploads go to x402 directly.
   let signedFailed = false;
 
   const viaX402 = async (data, itemTags, signal) => {
@@ -113,7 +103,11 @@ function createTurboUploader(options = {}) {
         try {
           ({ id } = await client.upload({ data, tags: itemTags, signal: bounded }));
         } catch (err) {
-          if (!(mode === "auto" && canPay && fallsBackToX402(err))) throw err;
+          if (err instanceof TurboSignerError) {
+            throw new TurboSignerError(`${err.message} For a smart-contract wallet, pass mode: "x402".`, { cause: err });
+          }
+          // A 402 means the free quota is spent and credits are short. Nothing was uploaded.
+          if (!(mode === "auto" && canPay && err instanceof TurboPaymentError)) throw err;
           signedFailed = true;
           id = await viaX402(data, itemTags, bounded);
         }

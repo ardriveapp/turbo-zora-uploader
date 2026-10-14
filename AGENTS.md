@@ -44,9 +44,10 @@ JSON with a charset, and the check wants exactly `application/json`. Pass
 `skipMetadataValidation: true` to `createCoinCall` on Base Sepolia. Never set it
 on Base to get past a failure: there it means the metadata URI is wrong.
 
-**5. A smart-contract wallet pays.** It cannot sign data items, so its uploads
-go through x402 and need `maxUsdc`. Set `mode: "x402"` to skip the failed
-signature that `"auto"` tries first.
+**5. A smart-contract wallet needs `mode: "x402"` and `maxUsdc`.** It cannot
+sign data items. In `"auto"`, a wallet client that exposes `signMessage` is
+tried on the signed path first, and its signature fails with
+`TurboSignerError`, which is thrown and not retried with x402.
 
 ## Errors
 
@@ -56,6 +57,6 @@ The uploader throws `@ardrive/turbo-upload`'s errors. Check `err.name`:
 |---|---|
 | `TurboConfigError` | a bad option, at `createTurboUploader` |
 | `TurboPaymentError` | the address cannot pay: out of free quota with no credits, or the x402 price is over `maxUsdc`. Retrying never helps |
-| `TurboSignerError` | the wallet refused or cannot sign. Nothing was uploaded |
+| `TurboSignerError` | the wallet refused or cannot sign. Nothing was uploaded. For a smart-contract wallet, use `mode: "x402"` |
 | `TurboTimeoutError` | `timeout` passed, or `signal` aborted, during a request |
 | `AbortError`, `TimeoutError` | the signal's own reason, when it had already fired before a request started |
