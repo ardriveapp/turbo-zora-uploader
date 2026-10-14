@@ -1,0 +1,104 @@
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # `engines` declares >=20, as the Zora Coins SDK does. Every major
+        # version from there is tested.
+        node: ["20", "22", "24"]
+    name: node ${{ matrix.node }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      # viem and the Zora SDK are devDependencies: the tests sign real items
+      # with a throwaway key. Neither reaches an installed package.
+      - run: npm ci --no-audit --no-fund
+      - run: npm test
+
+  types:
+    runs-on: ubuntu-latest
+    name: types, and the README quickstart compiles
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+      # The uploader is assignable to the SDK's own `Uploader`, viem accounts
+      # and wallet clients are signers, and the quickstart compiles as written.
+      - run: npm run types
+
+  live-script-guards:
+    runs-on: ubuntu-latest
+    name: the live scripts refuse production and chain 8453
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+      # Offline. The live runs need a funded Base Sepolia key and stay manual,
+      # per release: a key in a workflow input lands in a public run's payload.
+      - run: node scripts/live-testnet.js --check-guards
+      - name: the production script refuses to run without its flag
+        run: |
+          set +e
+          node scripts/live-mainnet-free.js; code=$?
+          [ "$code" = "2" ] || { echo "::error::expected exit 2, got $code"; exit 1; }
+
+  house-style:
+    runs-on: ubuntu-latest
+    name: house style
+    steps:
+      - uses: actions/checkout@v4
+      # Em dashes are banned in everything we write.
+      - name: no em dashes
+        run: |
+          hits=$(git ls-files -z ':!package-lock.json' | xargs -0 grep -nP '\x{2014}' 2>/dev/null || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::Em dashes are banned. Use a comma, a colon, or parentheses."
+            exit 1
+          fi
+          echo "no em dashes"
+
+  one-dependency:
+    runs-on: ubuntu-latest
+    name: exactly one runtime dependency
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      # @ardrive/turbo-upload and nothing else. It has no dependencies itself,
+      # so installing this package adds two lockfile entries, never more.
+      - name: assert the declared dependencies
+        run: |
+          deps=$(node -p "JSON.stringify(Object.keys(require('./package.json').dependencies || {}))")
+          other=$(node -p "JSON.stringify({ ...require('./package.json').peerDependencies, ...require('./package.json').optionalDependencies })")
+          echo "dependencies: $deps"
+          echo "peer and optional: $other"
+          if [ "$deps" != '["@ardrive/turbo-upload"]' ] || [ "$other" != "{}" ]; then
+            echo "::error::The one runtime dependency is @ardrive/turbo-upload. See README."
+            exit 1
+          fi
+      - name: assert the published tarball adds exactly two lockfile entries
+        run: |
+          npm pack --silent
+          tgz=$(ls -t ./*.tgz | head -1)
+          dir=$(mktemp -d)
+          cd "$dir" && npm init -y >/dev/null
+          npm install --package-lock-only --silent "$OLDPWD/$tgz"
+          n=$(node -p "Object.keys(require('$dir/package-lock.json').packages).filter(Boolean).length")
+          echo "lockfile entries added: $n"
+          [ "$n" = "2" ] || { echo "::error::Expected 2 lockfile entries, got $n"; exit 1; }
