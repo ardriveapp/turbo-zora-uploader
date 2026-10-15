@@ -1,24 +1,39 @@
 import { readFile } from "node:fs/promises";
 import { createCoin, createMetadataBuilder } from "@zoralabs/coins-sdk";
-import { createPublicClient, createWalletClient, http, recoverPublicKey } from "viem";
+import {
+  createPublicClient,
+  createWalletClient,
+  http,
+  recoverPublicKey,
+} from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import { base } from "viem/chains";
 import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
 
-// Small files are free. maxUsdc is the most one larger upload may cost: 0.50 USDC, paid on Base.
-const uploader = createTurboUploader({ signer: { ...account, recoverPublicKey }, maxUsdc: 500_000n });
+// Production by default: uploads are permanent and public.
+// Small files are free. maxUsdc is the most one larger upload may cost, in
+// USDC base units (6 decimals): 500_000n is 0.50 USDC, paid on Base.
+const uploader = createTurboUploader({
+  signer: { ...account, recoverPublicKey },
+  maxUsdc: 500_000n,
+});
 
+const png = await readFile("coin.png");
 const { createMetadataParameters } = await createMetadataBuilder()
   .withName("My Coin")
   .withSymbol("MYC")
   .withDescription("Metadata and image stored on Arweave")
-  .withImage(new File([await readFile("coin.png")], "coin.png", { type: "image/png" }))
+  .withImage(new File([png], "coin.png", { type: "image/png" }))
   .upload(uploader);
 
 const { address, hash } = await createCoin({
-  call: { ...createMetadataParameters, creator: account.address, currency: "ETH" },
+  call: {
+    ...createMetadataParameters,
+    creator: account.address,
+    currency: "ETH",
+  },
   walletClient: createWalletClient({ account, chain: base, transport: http() }),
   publicClient: createPublicClient({ chain: base, transport: http() }),
 });

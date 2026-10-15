@@ -30,6 +30,8 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "examples/",
+    "SKILL.md",
     "AGENTS.md",
     "README.md",
     "LICENSE"

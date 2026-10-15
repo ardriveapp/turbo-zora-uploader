@@ -424,10 +424,20 @@ test("timeout bounds the whole upload", async () => {
   assert.ok(Date.now() - t0 < 5000);
 });
 
-test("the README quickstart is test/types/quickstart.ts, which `npm run types` compiles", () => {
-  const fs = require("node:fs");
-  const path = require("node:path");
-  const readme = fs.readFileSync(path.join(__dirname, "..", "README.md"), "utf8");
-  const block = readme.match(/## Quickstart\n\n```ts\n([\s\S]*?)```/)[1];
-  assert.equal(block, fs.readFileSync(path.join(__dirname, "types", "quickstart.ts"), "utf8"));
+/* ------------------------- samples in the docs ------------------------- */
+
+const fs = require("node:fs");
+const path = require("node:path");
+const read = (...p) => fs.readFileSync(path.join(__dirname, "..", ...p), "utf8");
+
+test("the README samples are the files `npm run types` compiles", () => {
+  const readme = read("README.md");
+  assert.equal(readme.match(/## Quickstart\n\n```ts\n([\s\S]*?)```/)[1], read("test", "types", "quickstart.ts"));
+  assert.equal(readme.match(/In a browser, wrap the wallet client:\n\n```ts\n([\s\S]*?)```/)[1], read("test", "types", "browser.ts"));
+});
+
+test("the call in SKILL.md is an excerpt of the compiled quickstart", () => {
+  const blocks = [...read("SKILL.md").matchAll(/```ts\n([\s\S]*?)```/g)].map((m) => m[1]);
+  assert.ok(blocks.length > 0);
+  for (const block of blocks) assert.ok(read("test", "types", "quickstart.ts").includes(block), block);
 });

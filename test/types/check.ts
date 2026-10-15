@@ -40,3 +40,9 @@ createTurboUploader({ signer: account, uri: "ipfs", maxUsdc: 1 });
 createTurboUploader({ maxUsdc: 1 });
 
 export { both, x402, ar, fromWallet, result };
+
+// Combinations the runtime refuses are type errors too.
+// @ts-expect-error mode "x402" needs maxUsdc
+createTurboUploader({ signer: account, mode: "x402" });
+// @ts-expect-error gateway has no effect with uri "ar"
+createTurboUploader({ signer: account, maxUsdc: 1, uri: "ar", gateway: "https://example.com" });

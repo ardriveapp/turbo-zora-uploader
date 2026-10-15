@@ -16,6 +16,7 @@
   },
   "files": [
     "check.ts",
-    "quickstart.ts"
+    "quickstart.ts",
+    "browser.ts"
   ]
 }

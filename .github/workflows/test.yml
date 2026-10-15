@@ -27,7 +27,7 @@ jobs:
 
   types:
     runs-on: ubuntu-latest
-    name: types, and the README quickstart compiles
+    name: types, and the README samples compile
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -37,6 +37,25 @@ jobs:
       # The uploader is assignable to the SDK's own `Uploader`, viem accounts
       # and wallet clients are signers, and the quickstart compiles as written.
       - run: npm run types
+
+  examples:
+    runs-on: ubuntu-latest
+    name: the examples run against testnet
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: npm ci --no-audit --no-fund
+      # Throwaway keys, generated here and never stored. node-eoa.mjs uploads
+      # through the free signed path on testnet and stops before sending a
+      # transaction. smart-wallet-x402.mjs stops before paying. This job never
+      # passes --send, --pay or --production.
+      - name: run every example
+        run: |
+          key() { node -e "process.stdout.write(require('viem/accounts').generatePrivateKey())"; }
+          PRIVATE_KEY=$(key) node examples/node-eoa.mjs
+          OWNER_KEY=$(key) node examples/smart-wallet-x402.mjs
 
   live-script-guards:
     runs-on: ubuntu-latest
@@ -71,6 +90,24 @@ jobs:
             exit 1
           fi
           echo "no em dashes"
+      # The read-back greps from the house technical-writing style, on the
+      # prose an integrator reads.
+      - name: no filler, time words or vague links
+        run: |
+          files="README.md SKILL.md AGENTS.md index.d.ts examples/*.mjs"
+          hits=$(grep -nEi \
+            -e '\b(simply|easily|obviously|of course|note that|just|should)\b' \
+            -e '\b(currently|at present|for now|the latest|newer|soon|eventually|as of this writing)\b' \
+            -e '\b(e\.g\.|i\.e\.|etc\.|and/or|please)\b' \
+            -e '\b(whitelist|blacklist|sanity.check|dummy|guarantees|ensures|fastest|best.in.class)\b' \
+            -e '\[(here|this|this document|this doc|link|read more|more)\]' \
+            $files || true)
+          if [ -n "$hits" ]; then
+            echo "$hits"
+            echo "::error::See the house technical-writing style."
+            exit 1
+          fi
+          echo "clean"
 
   one-dependency:
     runs-on: ubuntu-latest
