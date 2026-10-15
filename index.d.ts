@@ -26,20 +26,27 @@ export interface TurboUploaderOptions {
   signer: TurboZoraSigner;
   /**
    * "auto" (default): signed when the signer can sign data items and the item
-   * fits the free tier, x402 otherwise. A signed upload that fails with
-   * TurboPaymentError goes to x402 when the signer can pay. A TurboSignerError
-   * is thrown: for a smart-contract wallet, pass "x402".
+   * fits the free tier, x402 otherwise. When the service refuses a signed item
+   * with TurboPaymentError, the file goes to x402 if the signer can pay. A
+   * TurboSignerError is thrown: for a smart-contract wallet, pass "x402".
    */
   mode?: "auto" | "signed" | "x402";
-  /** The most one x402 upload may pay, in USDC base units (6 decimals): 50000 is 0.05 USDC. Required for x402. */
-  maxUsdc?: IntegerAmount;
+  /**
+   * The most one x402 upload may cost, in USDC base units (6 decimals):
+   * 500000 is 0.50 USDC. A positive whole number; null or absent means the
+   * signer does not pay with x402. Required for mode "x402".
+   */
+  maxUsdc?: IntegerAmount | null;
   /** "https" (default): `<gateway>/<id>`, which Zora's metadata check reads within seconds. "ar": `ar://<id>`. */
   uri?: "https" | "ar";
-  /** An https:// gateway for "https" URLs. Default https://turbo-gateway.com, or https://ar-io.dev with `testnet`. */
+  /**
+   * An https:// gateway for "https" URLs, with no query or fragment. Default
+   * https://turbo-gateway.com, or https://ar-io.dev with `testnet`. Refused with uri "ar".
+   */
   gateway?: string;
   /** Upload to the testnet services: free signed items, x402 paid in Base Sepolia USDC. Default false. */
   testnet?: boolean;
-  /** Tags added to every item, after the Content-Type tag taken from `file.type`. */
+  /** Tags added to every item, after the Content-Type tag taken from `file.type`. A Content-Type tag here is refused. */
   tags?: Tag[];
   /** Passed to @ardrive/turbo-upload: tests and proxies. */
   fetch?: typeof fetch;
@@ -55,7 +62,7 @@ export interface TurboUploadResult {
 
 /** Structurally the Zora Coins SDK's `Uploader`. */
 export interface TurboUploader {
-  /** `timeout` is a deadline for the whole upload, in milliseconds, as in the SDK's own uploader. */
+  /** `timeout` is a deadline for the whole upload, in milliseconds; 0 means none, as in the SDK's own uploader. */
   upload(file: File, options?: { signal?: AbortSignal; timeout?: number }): Promise<TurboUploadResult>;
 }
 

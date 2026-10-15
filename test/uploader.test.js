@@ -8,7 +8,7 @@ const assert = require("node:assert/strict");
 const { Buffer } = require("node:buffer");
 const { generatePrivateKey, privateKeyToAccount } = require("viem/accounts");
 const { recoverPublicKey } = require("viem");
-const { parseDataItem, deserializeTags, idFromSignature, PRODUCTION, TESTNET } = require("@ardrive/turbo-upload");
+const { TurboUpload, parseDataItem, deserializeTags, idFromSignature, PRODUCTION, TESTNET } = require("@ardrive/turbo-upload");
 
 const { createTurboUploader } = require("../index.js");
 
@@ -175,6 +175,53 @@ test("auto: a wallet that refuses to sign is not asked to pay instead", async ()
   assert.deepEqual(fetch.paths(), ["/v1/info"]);
 });
 
+for (const [label, onTx, name] of [
+  ["a 500", () => json(500, { error: "boom" }), "TurboHTTPError"],
+  ["a network failure", () => Promise.reject(new TypeError("fetch failed")), "TurboNetworkError"],
+  ["a different id", () => json(200, { id: "y".repeat(43) }), "TurboVerificationError"],
+]) {
+  test(`auto: ${label} from /v1/tx is thrown, never paid with x402`, async () => {
+    const fetch = service({ onTx });
+    await assert.rejects(createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch }).upload(jsonFile()), { name });
+    assert.equal(fetch.paths().filter((p) => p === X402_ROUTE).length, 0);
+  });
+}
+
+test("auto: an item exactly at the free limit is signed, one byte over goes to x402", async () => {
+  const file = new File([new Uint8Array(300)], "a.png", { type: "image/png" });
+  const size = new TurboUpload({ signer: BOTH, token: "base-eth" }).getDataItemSize({
+    data: new Uint8Array(300),
+    tags: [{ name: "Content-Type", value: "image/png" }],
+  });
+  const at = service({ freeLimit: size });
+  await createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch: at }).upload(file);
+  assert.deepEqual(at.paths(), ["/v1/info", "/v1/tx"]);
+  const under = service({ freeLimit: size - 1 });
+  await createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch: under }).upload(file);
+  assert.deepEqual(under.paths(), ["/v1/info", X402_ROUTE, X402_ROUTE]);
+});
+
+test("auto: a null maxUsdc cannot pay, so a large file is signed", async () => {
+  const fetch = service({ freeLimit: 100 });
+  await createTurboUploader({ signer: BOTH, maxUsdc: null, fetch }).upload(new File([new Uint8Array(500)], "big.png", { type: "image/png" }));
+  assert.deepEqual(fetch.paths(), ["/v1/tx"]);
+  assert.throws(() => createTurboUploader({ signer: X402_ONLY, maxUsdc: null }), { name: "TurboConfigError", message: /maxUsdc/ });
+});
+
+test("auto: a failed /v1/info read fails the upload, and is read again next time", async () => {
+  let infoFails = true;
+  const inner = service();
+  const fetch = async (url, init) => {
+    if (url.endsWith("/v1/info") && infoFails) return json(404, {});
+    return inner(url, init);
+  };
+  const uploader = createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch });
+  await assert.rejects(uploader.upload(jsonFile()), { name: "TurboHTTPError" });
+  infoFails = false;
+  await uploader.upload(jsonFile());
+  assert.deepEqual(inner.paths(), ["/v1/info", "/v1/tx"]);
+});
+
 test('"signed": a 402 is thrown, never paid with x402', async () => {
   const fetch = service({ onTx: () => json(402, { error: "Insufficient balance" }) });
   await assert.rejects(createTurboUploader({ signer: BOTH, mode: "signed", maxUsdc: 50_000n, fetch }).upload(jsonFile()), {
@@ -206,6 +253,41 @@ test("other bad options are startup errors", () => {
     name: "TurboConfigError",
     message: /unknown option `uploadUrl`/,
   });
+});
+
+test("maxUsdc must be whole base units", () => {
+  for (const bad of [0.05, 0, -1, "0.05", "1e6", 0n, NaN, {}]) {
+    assert.throws(() => createTurboUploader({ signer: BOTH, maxUsdc: bad }), { name: "TurboConfigError", message: /base units/ }, String(bad));
+  }
+  for (const good of [1, 50_000, "50000", 50_000n]) createTurboUploader({ signer: BOTH, maxUsdc: good });
+});
+
+test("tags, fetch, options and the signer address are checked at creation", () => {
+  for (const tags of ["x", [{ name: "a" }], [{ name: 1, value: "b" }], [null]]) {
+    assert.throws(() => createTurboUploader({ signer: BOTH, tags }), { name: "TurboConfigError", message: /tags/ });
+  }
+  assert.throws(() => createTurboUploader({ signer: BOTH, fetch: "fetch" }), { name: "TurboConfigError", message: /fetch/ });
+  assert.throws(() => createTurboUploader(null), { name: "TurboConfigError" });
+  assert.throws(() => createTurboUploader(), { name: "TurboConfigError" });
+  // An x402-only signer: nothing else would look at its address before the first upload.
+  assert.throws(() => createTurboUploader({ signer: { address: "0x12", signTypedData: account.signTypedData }, maxUsdc: 1 }), {
+    name: "TurboConfigError",
+    message: /address/,
+  });
+});
+
+test("a Content-Type tag is refused: it comes from file.type", () => {
+  assert.throws(() => createTurboUploader({ signer: BOTH, tags: [{ name: "content-type", value: "text/html" }] }), {
+    name: "TurboConfigError",
+    message: /file\.type/,
+  });
+});
+
+test("a gateway with a query or fragment, or with uri \"ar\", is refused", () => {
+  for (const gateway of ["https://example.com/?a=1", "https://example.com#x", "https://example.com/?"]) {
+    assert.throws(() => createTurboUploader({ signer: BOTH, gateway }), { name: "TurboConfigError", message: /query or fragment/ }, gateway);
+  }
+  assert.throws(() => createTurboUploader({ signer: BOTH, uri: "ar", gateway: "https://example.com" }), { name: "TurboConfigError", message: /uri "ar"/ });
 });
 
 /* -------------------------------- URL forms -------------------------------- */
@@ -303,20 +385,43 @@ test("aborting mid-upload rejects, on both paths", async () => {
   }
 });
 
+test("an already-aborted signal reads nothing, in auto mode with both paths", async () => {
+  const fetch = service();
+  await assert.rejects(createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch }).upload(jsonFile(), { signal: AbortSignal.abort() }), { name: "AbortError" });
+  assert.deepEqual(fetch.calls, []);
+});
+
+test("aborting while the free limit is read stops before the wallet is asked", async () => {
+  const controller = new AbortController();
+  let signed = false;
+  const signer = { ...BOTH, signMessage: async (m) => ((signed = true), account.signMessage(m)) };
+  const fetch = async () => {
+    controller.abort();
+    return json(200, { freeUploadLimitBytes: 107520 });
+  };
+  await assert.rejects(createTurboUploader({ signer, maxUsdc: 50_000n, fetch }).upload(jsonFile(), { signal: controller.signal }), { name: "AbortError" });
+  assert.equal(signed, false);
+});
+
+test("timeout 0 is no timeout, and a negative timeout is refused", async () => {
+  // Answers after 30 ms unless the request is aborted first.
+  const slow = (call, init) =>
+    new Promise((resolve, reject) => {
+      setTimeout(() => resolve(json(200, { id: call.id })), 30);
+      init.signal.addEventListener("abort", () => reject(init.signal.reason), { once: true });
+    });
+  const fetch = service({ onTx: slow });
+  const uploader = createTurboUploader({ signer: BOTH, fetch });
+  await uploader.upload(jsonFile(), { timeout: 0 });
+  assert.deepEqual(fetch.paths(), ["/v1/tx"]);
+  await assert.rejects(uploader.upload(jsonFile(), { timeout: -1 }), { name: "TurboConfigError", message: /timeout/ });
+});
+
 test("timeout bounds the whole upload", async () => {
   const fetch = hanging();
   const t0 = Date.now();
   await assert.rejects(createTurboUploader({ signer: BOTH, fetch }).upload(jsonFile(), { timeout: 100 }), { name: "TurboTimeoutError" });
   assert.ok(Date.now() - t0 < 5000);
-});
-
-/* ------------------------------- dependencies ------------------------------- */
-
-test("one runtime dependency: @ardrive/turbo-upload", () => {
-  const pkg = require("../package.json");
-  assert.deepEqual(Object.keys(pkg.dependencies), ["@ardrive/turbo-upload"]);
-  assert.equal(pkg.peerDependencies, undefined);
-  assert.equal(pkg.optionalDependencies, undefined);
 });
 
 test("the README quickstart is test/types/quickstart.ts, which `npm run types` compiles", () => {

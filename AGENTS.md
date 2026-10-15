@@ -21,7 +21,7 @@ import { privateKeyToAccount } from "viem/accounts";
 import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY);
-const uploader = createTurboUploader({ signer: { ...account, recoverPublicKey }, maxUsdc: 50_000n });
+const uploader = createTurboUploader({ signer: { ...account, recoverPublicKey }, maxUsdc: 500_000n });
 ```
 
 `testnet: true` for anything not meant to last. Production uploads are
@@ -33,8 +33,9 @@ permanent and public.
 `recoverPublicKey`, so it cannot sign data items and can only pay with x402.
 Without `maxUsdc` as well, `createTurboUploader` throws.
 
-**2. `maxUsdc` is in USDC base units**, six decimals: `50_000n` is 0.05 USDC,
-not 50 000 dollars. It caps each upload, not the total.
+**2. `maxUsdc` is in USDC base units**, six decimals: `500_000n` is 0.50 USDC,
+not 500 000 dollars. It caps each upload, not the total. A decimal such as
+`0.05` is refused at creation.
 
 **3. Production is the default.** A bare `createTurboUploader({ signer })`
 writes permanent data.
@@ -45,9 +46,10 @@ JSON with a charset, and the check wants exactly `application/json`. Pass
 on Base to get past a failure: there it means the metadata URI is wrong.
 
 **5. A smart-contract wallet needs `mode: "x402"` and `maxUsdc`.** It cannot
-sign data items. In `"auto"`, a wallet client that exposes `signMessage` is
-tried on the signed path first, and its signature fails with
-`TurboSignerError`, which is thrown and not retried with x402.
+sign data items. In `"auto"`, a signer that has both `signMessage` and
+`recoverPublicKey` is tried on the signed path first. A smart wallet's
+signature then fails with `TurboSignerError`, which is thrown and not retried
+with x402.
 
 ## Errors
 

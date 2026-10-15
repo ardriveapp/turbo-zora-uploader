@@ -7,8 +7,8 @@ import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
 
-// Free for small files; files over the free tier pay up to 0.05 USDC each on Base.
-const uploader = createTurboUploader({ signer: { ...account, recoverPublicKey }, maxUsdc: 50_000n });
+// Small files are free. maxUsdc is the most one larger upload may cost: 0.50 USDC, paid on Base.
+const uploader = createTurboUploader({ signer: { ...account, recoverPublicKey }, maxUsdc: 500_000n });
 
 const { createMetadataParameters } = await createMetadataBuilder()
   .withName("My Coin")

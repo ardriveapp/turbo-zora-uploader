@@ -1,23 +1,26 @@
 name: publish
 
 # Tag-driven, so publishing is a deliberate act with a reviewable trigger
-# rather than a side effect of merging. Push a tag that matches the version in
-# package.json:
+# rather than a side effect of merging. After the version bump has merged to
+# main, push a tag that matches the version in package.json:
 #
-#   git tag v0.1.0 && git push origin v0.1.0
+#   git tag v0.1.1 && git push origin v0.1.1
 #
-# AUTHENTICATION: this uses npm trusted publishing, so there is no token and no
+# THE FIRST VERSION IS PUBLISHED BY HAND. npm can only attach a trusted
+# publisher to a package that already exists, so for 0.1.0:
+#   1. A maintainer runs `npm publish` once, from a clean checkout of the
+#      release commit on main.
+#   2. On npmjs.com, the package page -> Settings -> Trusted Publisher ->
+#      GitHub Actions:
+#        organization: ardriveapp   repository: turbo-zora-uploader   workflow: publish.yml
+#   3. The maintainer tags v0.1.0 on that same commit and pushes the tag. This
+#      workflow finds 0.1.0 already on the registry and stops with a notice.
+# From 0.1.1 on, every tag publishes through this workflow.
+#
+# AUTHENTICATION: npm trusted publishing, so there is no token and no
 # repository secret. npm verifies a short-lived OIDC token that GitHub mints for
-# this specific workflow in this specific repository, which is why `id-token:
-# write` below is load-bearing.
-#
-# One-time setup, on npmjs.com, by a package maintainer:
-#   the package page -> Settings -> Trusted Publisher -> GitHub Actions
-#   organization: ardriveapp   repository: turbo-zora-uploader   workflow: publish.yml
-#
-# Preferred over an NPM_TOKEN secret because there is no long-lived credential
-# to leak, rotate or expire, and a stolen one cannot be replayed from anywhere
-# else. It also signs provenance without a separate flag.
+# this workflow in this repository, which is why `id-token: write` below is
+# required.
 on:
   push:
     tags: ["v*"]
@@ -27,32 +30,37 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      # Required for npm provenance, which attests that this tarball was built
-      # from this commit by this workflow. For a package whose whole argument is
-      # small dependency surface, saying so verifiably is worth the extra line.
+      # Required for the OIDC exchange and for npm provenance, which attests
+      # that this tarball was built from this commit by this workflow.
       id-token: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The whole history, so the tag's commit can be checked against main.
+          fetch-depth: 0
       - uses: actions/setup-node@v4
         with:
           # Trusted publishing needs Node >= 22.14 and npm >= 11.5.1. Node 24
-          # satisfies the first; the npm that ships with it does not reliably
-          # satisfy the second, so it is upgraded explicitly rather than left
-          # to whatever the runner image happens to carry this month.
+          # satisfies the first; npm is upgraded below for the second.
           node-version: "24"
-          # `registry-url` is required, and this was removed once on a wrong
-          # diagnosis. It writes the .npmrc that points npm at the registry.
-          # Without it npm has nothing to authenticate against and fails
-          # ENEEDAUTH without ever attempting the OIDC exchange.
-          #
-          # What must NOT be set is NODE_AUTH_TOKEN on the publish step. A
-          # configured token is used in preference to OIDC. There is none here.
+          # Writes the .npmrc that points npm at the registry. Without it npm
+          # fails ENEEDAUTH without attempting the OIDC exchange. Do not set
+          # NODE_AUTH_TOKEN on the publish step: a token is used before OIDC.
           registry-url: "https://registry.npmjs.org"
 
       - name: npm new enough for trusted publishing
         run: |
           npm install -g npm@^11
           npm --version
+
+      # A tag on a branch nobody reviewed would publish unreviewed code.
+      - name: the tag's commit must be on main
+        run: |
+          git fetch --no-tags origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on main."
+            exit 1
+          }
 
       # A tag that disagrees with package.json publishes a version nobody
       # intended and cannot be taken back, so it fails here instead.
@@ -66,27 +74,28 @@ jobs:
             exit 1
           }
 
-      - name: refuse to publish a version that already exists
+      # Already on the registry: the first version, published by hand, or a
+      # re-pushed tag. Nothing to do, so the run succeeds and says why.
+      - name: skip a version that is already published
+        id: published
         run: |
           name=$(node -p "require('./package.json').name")
           pkg=$(node -p "require('./package.json').version")
           if npm view "$name@$pkg" version >/dev/null 2>&1; then
-            echo "::error::$name@$pkg is already published. Bump the version."
-            exit 1
+            echo "::notice::$name@$pkg is already on the registry. Nothing to publish."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
           fi
 
-      - run: npm ci --no-audit --no-fund
-      - run: npm test
-      - run: npm run types
+      - if: steps.published.outputs.skip != 'true'
+        run: npm ci --no-audit --no-fund
+      - if: steps.published.outputs.skip != 'true'
+        run: npm test
+      - if: steps.published.outputs.skip != 'true'
+        run: npm run types
 
-      # Nothing here configures a token. Authentication is the OIDC token from
-      # the `id-token: write` permission above, exchanged with npm for a
-      # short-lived credential. Provenance is attested as part of that exchange.
-      # Reports, never blocks. Two publishes have already failed on wrong
-      # guesses about this, and a check that fails the publish on a value
-      # nobody has observed is a third way to be wrong. When a publish fails,
-      # this is the first thing to read.
+      # Reports, never blocks. When a publish fails, read this first.
       - name: what npm will try to authenticate with
+        if: steps.published.outputs.skip != 'true'
         run: |
           echo "npm      $(npm --version)"
           echo "node     $(node --version)"
@@ -99,9 +108,11 @@ jobs:
             *) echo "auth token: a value is configured, which npm will prefer over OIDC" ;;
           esac
 
-      - run: npm publish
+      - if: steps.published.outputs.skip != 'true'
+        run: npm publish
 
-      - name: confirm the registry actually has it
+      - name: confirm the registry has it
+        if: steps.published.outputs.skip != 'true'
         run: |
           name=$(node -p "require('./package.json').name")
           pkg=$(node -p "require('./package.json').version")
