@@ -11,9 +11,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # `engines` declares >=20.3, the first Node 20 with AbortSignal.any.
-        # The floor and every major version from there are tested.
-        node: ["20.3", "20", "22", "24"]
+        # `engines` declares >=20, as the Zora Coins SDK does; Node 20.0 also
+        # has the File global. Node 20.0 lacks AbortSignal.any, so it runs the
+        # fallback. The floor and every major version from there are tested.
+        node: ["20.0", "20", "22", "24"]
     name: node ${{ matrix.node }}
     steps:
       - uses: actions/checkout@v4

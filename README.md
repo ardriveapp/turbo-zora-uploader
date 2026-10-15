@@ -64,6 +64,9 @@ const { address, hash } = await createCoin({
 console.log(createMetadataParameters.metadata.uri, address, hash);
 ```
 
+In the comments here and in the sections that follow, ITEM_ID stands for the
+Arweave item ID that an upload returns.
+
 Runnable versions, which default to testnet, are in [`examples/`](examples/):
 `node-eoa.mjs` for an account with a private key, and `smart-wallet-x402.mjs`
 for a smart-contract wallet.
@@ -140,7 +143,8 @@ sign a data item. **For a smart-contract wallet, pass `mode: "x402"`.**
 A failure on the signed path pays nothing. An x402 upload that fails after its
 payment is sent is not retried, and the payment might have settled: check the
 payer's USDC transfers before you upload the file again. The error from
-`@ardrive/turbo-upload` says so.
+`@ardrive/turbo-upload` says so, including a `TurboPaymentError` for a 402 that
+the service answers when settling fails.
 
 This keeps a Zora creator's usual upload, one image and one metadata file, free
 with no setup. A larger file goes through x402 without code changes, as long as
@@ -155,7 +159,8 @@ By default (`uri: "auto"`), the uploader returns one of two URL forms:
   coin's metadata pointer. Zora's create API takes only an `https://` or
   `ipfs://` pointer, and refuses `ar://`.
 - **Everything else, such as the image or other media:** `ar://ITEM_ID`,
-  which names no gateway, so any Arweave gateway can serve it.
+  which names no gateway, so a client can read it through a gateway it
+  chooses that has the item.
 
 The uploader tells the two apart by `file.type`: `application/json` is the
 metadata. Zora's `createMetadataBuilder` uploads the metadata as a `File` of
@@ -202,11 +207,13 @@ Sepolia USDC, and nothing is permanent. Testnet items are served by
 `https://ar-io.dev`, the default gateway there. arweave.net does not serve
 them, because they are not on Arweave.
 
-The default testnet gateway does not pass Zora's metadata check: on
-2026-10-14, ar-io.dev served JSON as `application/json; charset=utf-8`, which
-the check refuses. So `createCoin` on Base Sepolia refuses metadata uploaded
-with `testnet: true`, unless you pass a `gateway` that serves testnet items as
-exactly `application/json`.
+Testnet covers uploads, not coin creation:
+
+- On 2026-10-15, Zora's create API refused each Base Sepolia coin tried: the
+  coin factory's `coinAddress` call reverted, with a passing https pointer and
+  with currency ETH, ZORA or CREATOR_COIN.
+- On 2026-10-14, ar-io.dev served JSON as `application/json; charset=utf-8`,
+  which Zora's metadata check refuses.
 
 ## Options
 
@@ -226,13 +233,16 @@ exactly `application/json`.
 An unknown or invalid option throws `TurboConfigError` when the uploader is
 created. `null` counts as absent for every option.
 
-In a browser without `AbortSignal.any`, such as Safari before 17.4, the
-uploader combines `signal` and `timeout` itself.
-
 `upload(file, { signal, timeout })` honours both: `timeout` is a deadline for
 the whole upload in milliseconds, and 0 means none, as in the SDK's own
 uploader. A `timeout` that is negative, over 4294967295 or not a number throws
-`TurboConfigError`. Other errors come from `@ardrive/turbo-upload`. For more information, see
+`TurboConfigError`. When `signal` aborts or `timeout` passes, the upload throws
+`TurboTimeoutError`, `AbortError` or `TimeoutError`, depending on when.
+
+In a browser without `AbortSignal.any`, such as Safari before 17.4, the
+uploader combines `signal` and `timeout` itself.
+
+Other errors come from `@ardrive/turbo-upload`. For more information, see
 [the turbo-upload errors reference](https://github.com/ardriveapp/turbo-upload#errors).
 
 ## License

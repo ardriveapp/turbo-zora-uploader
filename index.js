@@ -25,18 +25,24 @@ const MAX_TIMEOUT_MS = 2 ** 32 - 1;
 // An https URL with a host, an optional path, and no credentials, spaces, query or fragment.
 const GATEWAY = /^https:\/\/[^/?#@\s]+(\/[^?#\s]*)?$/i;
 
-/** The signals combined. AbortSignal.any is missing from older browsers, such as Safari before 17.4. */
+/**
+ * The signals combined, and a release that drops any listeners this added.
+ * AbortSignal.any is missing from older browsers, such as Safari before 17.4.
+ */
 function anySignal(signals) {
-  if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
+  if (typeof AbortSignal.any === "function") return { signal: AbortSignal.any(signals), release() {} };
   const controller = new AbortController();
+  const added = [];
   for (const s of signals) {
     if (s.aborted) {
       controller.abort(s.reason);
       break;
     }
-    s.addEventListener("abort", () => controller.abort(s.reason), { once: true });
+    const onAbort = () => controller.abort(s.reason);
+    s.addEventListener("abort", onAbort, { once: true });
+    added.push([s, onAbort]);
   }
-  return controller.signal;
+  return { signal: controller.signal, release: () => added.forEach(([s, onAbort]) => s.removeEventListener("abort", onAbort)) };
 }
 
 /** Whether a file is the coin's metadata JSON, which Zora's builder uploads as application/json. */
@@ -138,6 +144,52 @@ function createTurboUploader(options) {
     return res.id;
   };
 
+  /** One upload, bounded by `bounded`. */
+  const uploadWithin = async (file, bounded) => {
+    bounded?.throwIfAborted();
+
+    const data = new Uint8Array(await file.arrayBuffer());
+    const itemTags = [...(file.type ? [{ name: "Content-Type", value: file.type }] : []), ...tags];
+
+    let path = mode;
+    if (mode === "auto") {
+      if (!canPay) path = "signed";
+      else if (!canSign || signedFailed) path = "x402";
+      else {
+        freeLimit ??= await client.getFreeUploadLimitBytes({ signal: bounded });
+        path = client.getDataItemSize({ data, tags: itemTags }) <= freeLimit ? "signed" : "x402";
+      }
+    }
+    // Before the wallet is asked to sign anything.
+    bounded?.throwIfAborted();
+
+    let id;
+    if (path === "signed") {
+      try {
+        ({ id } = await client.upload({ data, tags: itemTags, signal: bounded }));
+      } catch (err) {
+        if (err instanceof TurboSignerError) {
+          throw new TurboSignerError(`${err.message} For a smart-contract wallet, pass mode: "x402".`, { cause: err });
+        }
+        // The service refused the signed item with a 402: the free quota is
+        // spent and credits are short. Nothing was stored.
+        if (!(mode === "auto" && canPay && err instanceof TurboPaymentError)) throw err;
+        signedFailed = true;
+        id = await viaX402(data, itemTags, bounded);
+      }
+    } else {
+      id = await viaX402(data, itemTags, bounded);
+    }
+
+    return {
+      // Zora's create API takes only an https or ipfs metadata pointer, so
+      // the JSON is on the gateway; media stays ar://, which names no gateway.
+      url: uri === "https" || (uri === "auto" && isJson(file)) ? `${gateway}/${id}` : `ar://${id}`,
+      size: file.size,
+      mimeType: file.type || undefined,
+    };
+  };
+
   return {
     async upload(file, { signal, timeout } = {}) {
       if (timeout !== undefined && !(typeof timeout === "number" && timeout >= 0 && timeout <= MAX_TIMEOUT_MS)) {
@@ -145,49 +197,13 @@ function createTurboUploader(options) {
       }
       // As in the SDK's own uploader, 0 means no timeout.
       const signals = [signal, timeout ? AbortSignal.timeout(timeout) : undefined].filter(Boolean);
-      const bounded = signals.length > 1 ? anySignal(signals) : signals[0];
-      bounded?.throwIfAborted();
-
-      const data = new Uint8Array(await file.arrayBuffer());
-      const itemTags = [...(file.type ? [{ name: "Content-Type", value: file.type }] : []), ...tags];
-
-      let path = mode;
-      if (mode === "auto") {
-        if (!canPay) path = "signed";
-        else if (!canSign || signedFailed) path = "x402";
-        else {
-          freeLimit ??= await client.getFreeUploadLimitBytes({ signal: bounded });
-          path = client.getDataItemSize({ data, tags: itemTags }) <= freeLimit ? "signed" : "x402";
-        }
+      const combined = signals.length > 1 ? anySignal(signals) : { signal: signals[0], release() {} };
+      try {
+        return await uploadWithin(file, combined.signal);
+      } finally {
+        // A long-lived caller signal keeps no listener from this upload.
+        combined.release();
       }
-      // Before the wallet is asked to sign anything.
-      bounded?.throwIfAborted();
-
-      let id;
-      if (path === "signed") {
-        try {
-          ({ id } = await client.upload({ data, tags: itemTags, signal: bounded }));
-        } catch (err) {
-          if (err instanceof TurboSignerError) {
-            throw new TurboSignerError(`${err.message} For a smart-contract wallet, pass mode: "x402".`, { cause: err });
-          }
-          // The service refused the signed item with a 402: the free quota is
-          // spent and credits are short. Nothing was stored.
-          if (!(mode === "auto" && canPay && err instanceof TurboPaymentError)) throw err;
-          signedFailed = true;
-          id = await viaX402(data, itemTags, bounded);
-        }
-      } else {
-        id = await viaX402(data, itemTags, bounded);
-      }
-
-      return {
-        // Zora's create API takes only an https or ipfs metadata pointer, so
-        // the JSON is on the gateway; media stays ar://, which names no gateway.
-        url: uri === "https" || (uri === "auto" && isJson(file)) ? `${gateway}/${id}` : `ar://${id}`,
-        size: file.size,
-        mimeType: file.type || undefined,
-      };
     },
   };
 }

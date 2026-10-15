@@ -359,6 +359,16 @@ test("auto: the metadata JSON is on the gateway, and media is ar://", async () =
   assert.equal(typed.url, `https://turbo-gateway.com/${fetch.calls[2].id}`);
 });
 
+test("auto: only application/json is the metadata; other JSON types are media and get ar://", async () => {
+  const fetch = service();
+  const uploader = createTurboUploader({ signer: BOTH, fetch });
+  const types = ["application/ld+json", "application/geo+json", "text/json", "application/json-seq"];
+  for (const [i, type] of types.entries()) {
+    const res = await uploader.upload(new File(["{}"], "x.json", { type }));
+    assert.equal(res.url, `ar://${fetch.calls[i].id}`, type);
+  }
+});
+
 test("Zora's builder gets an https pointer to metadata whose image is ar://", async () => {
   const { createMetadataBuilder } = require("@zoralabs/coins-sdk");
   const fetch = service();
@@ -540,4 +550,20 @@ test("without AbortSignal.any, as in older browsers, signal and timeout still co
   setTimeout(() => controller.abort(), 30);
   await assert.rejects(pending, { name: "TurboTimeoutError" });
   await assert.rejects(uploader.upload(jsonFile(), { signal: new AbortController().signal, timeout: 50 }), { name: "TurboTimeoutError" });
+});
+
+test("without AbortSignal.any, a long-lived signal keeps no listener after an upload settles", async (t) => {
+  const { getEventListeners } = require("node:events");
+  const any = AbortSignal.any;
+  AbortSignal.any = undefined;
+  t.after(() => {
+    AbortSignal.any = any;
+  });
+  const longLived = new AbortController().signal;
+  const uploader = createTurboUploader({ signer: BOTH, fetch: service() });
+  for (let i = 0; i < 3; i++) await uploader.upload(jsonFile(), { signal: longLived, timeout: 60_000 });
+  await assert.rejects(uploader.upload(jsonFile(), { signal: longLived, timeout: -1 }), { name: "TurboConfigError" });
+  const failing = createTurboUploader({ signer: BOTH, fetch: service({ onTx: () => json(500, {}) }) });
+  await assert.rejects(failing.upload(jsonFile(), { signal: longLived, timeout: 60_000 }));
+  assert.equal(getEventListeners(longLived, "abort").length, 0);
 });

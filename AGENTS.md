@@ -78,8 +78,11 @@ The wallet that signs decides the signer shape and the mode:
   `uri: "ar"` cannot create a coin. Leave `skipMetadataValidation` unset: the
   https pointer passes Zora's check.
 - **A different gateway must serve a fresh item at once, as exactly
-  `application/json`**, or Zora's metadata check fails. The default testnet
-  gateway, ar-io.dev, adds a charset, so it fails the check.
+  `application/json`**, or Zora's metadata check fails. On 2026-10-14, the
+  default testnet gateway, ar-io.dev, added a charset, which fails the check.
+- **Testnet covers uploads, not coin creation.** On 2026-10-15, Zora's create
+  API refused each Base Sepolia coin tried: the factory's `coinAddress` call
+  reverted.
 - **A smart-contract wallet needs `mode: "x402"`.** It cannot sign data items.
   In `mode: "auto"`, a signer with `signMessage` and `recoverPublicKey` takes
   the signed path for small files, and a smart wallet's signature then fails
@@ -99,10 +102,9 @@ re-export, so check `err.name`:
 | `err.name` | Catch it when | Then |
 |---|---|---|
 | `TurboConfigError` | `createTurboUploader` or `upload` got a bad option | Fix the option. Retrying does not help |
-| `TurboPaymentError` | The address cannot pay: the free quota is spent with no credits and the uploader has no x402 path, or the x402 price is over `maxUsdc` | Raise `maxUsdc` or fund the wallet. Retrying does not help |
+| `TurboPaymentError` | The address cannot pay: the free quota is spent with no credits and the uploader has no x402 path, or the x402 price is over `maxUsdc`. It also covers a paid request that got a 402 because settling failed | Raise `maxUsdc` or fund the wallet; retrying does not help. If the message says the payment might have settled, check the payer's USDC transfers before you retry |
 | `TurboSignerError` | The wallet refused to sign, or a smart-contract wallet was asked to sign a data item | For a smart-contract wallet, use `mode: "x402"`. Nothing was uploaded |
-| `TurboTimeoutError` | `timeout` passed, or `signal` aborted, during a request | Retry if the caller still wants the upload. After an x402 payment, check the payer's USDC transfers first |
-| `AbortError`, `TimeoutError` | The signal had already fired before a request started | Nothing was sent |
+| `TurboTimeoutError`, `AbortError` or `TimeoutError` | The signal aborted or `timeout` passed | Retry if the caller still wants the upload. After an x402 payment was sent, check the payer's USDC transfers first |
 
 Any other error, such as `TurboHTTPError` or `TurboNetworkError`, is described
 in [the turbo-upload errors reference](https://github.com/ardriveapp/turbo-upload#errors).

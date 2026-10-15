@@ -10,8 +10,9 @@
 // Testnet by default. --production writes permanent, public data even without
 // --send, so it also needs --yes-production. Small files are free on both, so
 // storage costs nothing here; --send pays gas on Base, or on Base Sepolia.
-// On testnet, --send fails Zora's metadata check, because the testnet gateway
-// serves JSON with a charset.
+// On testnet, --send fails: on 2026-10-15, Zora's create API refused Base
+// Sepolia coins, and on 2026-10-14 the testnet gateway served JSON with a
+// charset, which Zora's metadata check refuses.
 import { createCoin, createMetadataBuilder } from "@zoralabs/coins-sdk";
 import {
   createPublicClient,
