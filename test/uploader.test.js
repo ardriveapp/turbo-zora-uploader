@@ -72,7 +72,7 @@ function service({ freeLimit = 107520, testnet = false, onTx } = {}) {
   return fn;
 }
 
-const jsonFile = (body = { name: "Coin", description: "d", image: "https://turbo-gateway.com/x" }) =>
+const jsonFile = (body = { name: "Coin", description: "d", image: "ar://x" }) =>
   new File([JSON.stringify(body)], "metadata.json", { type: "application/json" });
 
 /* ---------------------------- mode selection ---------------------------- */
@@ -85,7 +85,7 @@ test("auto: a small file goes the free signed path", async () => {
   const tx = fetch.calls[1];
   assert.equal(tx.origin, PRODUCTION.uploadUrl);
   assert.equal(Buffer.from(tx.data).toString("utf8"), await file.text());
-  assert.deepEqual(res, { url: `https://turbo-gateway.com/${tx.id}`, size: file.size, mimeType: "application/json" });
+  assert.deepEqual(res, { url: `ar://${tx.id}`, size: file.size, mimeType: "application/json" });
 });
 
 test("auto: a file over the free limit goes to x402", async () => {
@@ -93,7 +93,7 @@ test("auto: a file over the free limit goes to x402", async () => {
   const file = new File([new Uint8Array(500)], "big.png", { type: "image/png" });
   const res = await createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch }).upload(file);
   assert.deepEqual(fetch.paths(), ["/v1/info", X402_ROUTE, X402_ROUTE]);
-  assert.equal(res.url, `https://turbo-gateway.com/${X402_ID}`);
+  assert.equal(res.url, `ar://${X402_ID}`);
 });
 
 test("auto: the free limit is the signed item's size, and is read once", async () => {
@@ -127,7 +127,7 @@ test("auto: a spent free quota falls back to x402, and later uploads go there di
   const fetch = service({ onTx: () => json(402, { error: "Insufficient balance" }) });
   const uploader = createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch });
   const first = await uploader.upload(jsonFile());
-  assert.equal(first.url, `https://turbo-gateway.com/${X402_ID}`);
+  assert.equal(first.url, `ar://${X402_ID}`);
   assert.deepEqual(fetch.paths(), ["/v1/info", "/v1/tx", X402_ROUTE, X402_ROUTE]);
   await uploader.upload(jsonFile());
   assert.deepEqual(fetch.paths().slice(4), [X402_ROUTE, X402_ROUTE]);
@@ -152,7 +152,7 @@ test("x402 mode is the way out for a smart-contract wallet", async () => {
   const fetch = service();
   const smartWallet = { address: account.address, signMessage: async () => `0x${"ab".repeat(100)}`, recoverPublicKey, signTypedData: account.signTypedData };
   const res = await createTurboUploader({ signer: smartWallet, mode: "x402", maxUsdc: 50_000n, fetch }).upload(jsonFile());
-  assert.equal(res.url, `https://turbo-gateway.com/${X402_ID}`);
+  assert.equal(res.url, `ar://${X402_ID}`);
   assert.deepEqual(fetch.paths(), [X402_ROUTE, X402_ROUTE]);
 });
 
@@ -222,9 +222,15 @@ test("auto: a failed /v1/info read fails the upload, and is read again next time
   assert.deepEqual(inner.paths(), ["/v1/info", "/v1/tx"]);
 });
 
+test("auto with no maxUsdc: a 402 is thrown as TurboPaymentError", async () => {
+  const fetch = service({ onTx: () => json(402, { error: "Insufficient balance" }) });
+  await assert.rejects(createTurboUploader({ signer: BOTH, fetch }).upload(jsonFile()), { name: "TurboPaymentError" });
+  assert.deepEqual(fetch.paths(), ["/v1/tx"]);
+});
+
 test('"signed": a 402 is thrown, never paid with x402', async () => {
   const fetch = service({ onTx: () => json(402, { error: "Insufficient balance" }) });
-  await assert.rejects(createTurboUploader({ signer: BOTH, mode: "signed", maxUsdc: 50_000n, fetch }).upload(jsonFile()), {
+  await assert.rejects(createTurboUploader({ signer: BOTH, mode: "signed", fetch }).upload(jsonFile()), {
     name: "TurboPaymentError",
   });
   assert.deepEqual(fetch.paths(), ["/v1/tx"]);
@@ -248,7 +254,10 @@ test("other bad options are startup errors", () => {
   assert.throws(() => createTurboUploader({}), { name: "TurboConfigError", message: /signer/ });
   assert.throws(() => createTurboUploader({ signer: BOTH, mode: "free" }), { name: "TurboConfigError", message: /mode/ });
   assert.throws(() => createTurboUploader({ signer: BOTH, uri: "ipfs" }), { name: "TurboConfigError", message: /uri/ });
-  assert.throws(() => createTurboUploader({ signer: BOTH, gateway: "http://localhost:3000" }), { name: "TurboConfigError", message: /https/ });
+  assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https", gateway: "http://localhost:3000" }), {
+    name: "TurboConfigError",
+    message: /https/,
+  });
   assert.throws(() => createTurboUploader({ signer: BOTH, uploadUrl: TESTNET.uploadUrl }), {
     name: "TurboConfigError",
     message: /unknown option `uploadUrl`/,
@@ -285,39 +294,66 @@ test("a Content-Type tag is refused: it comes from file.type", () => {
 
 test("a gateway with a query or fragment, or with uri \"ar\", is refused", () => {
   for (const gateway of ["https://example.com/?a=1", "https://example.com#x", "https://example.com/?"]) {
-    assert.throws(() => createTurboUploader({ signer: BOTH, gateway }), { name: "TurboConfigError", message: /query or fragment/ }, gateway);
+    assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https", gateway }), { name: "TurboConfigError", message: /query or fragment/ }, gateway);
   }
+  assert.throws(() => createTurboUploader({ signer: BOTH, gateway: "https://example.com" }), { name: "TurboConfigError", message: /uri "ar"/ });
   assert.throws(() => createTurboUploader({ signer: BOTH, uri: "ar", gateway: "https://example.com" }), { name: "TurboConfigError", message: /uri "ar"/ });
+});
+
+test("null means absent, for gateway as for maxUsdc", async () => {
+  const fetch = service();
+  const res = await createTurboUploader({ signer: BOTH, gateway: null, maxUsdc: null, fetch }).upload(jsonFile());
+  assert.equal(res.url, `ar://${fetch.calls[0].id}`);
+  assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https", gateway: null }), { name: "TurboConfigError", message: /needs `gateway`/ });
+});
+
+test("an HTTPS scheme in any case is accepted, and returned in lower case", async () => {
+  const fetch = service();
+  const res = await createTurboUploader({ signer: BOTH, uri: "https", gateway: "HTTPS://Example.com", fetch }).upload(jsonFile());
+  assert.equal(res.url, `https://Example.com/${fetch.calls[0].id}`);
+});
+
+test("a signer method that is present but not a function is refused", () => {
+  for (const method of ["signTypedData", "signMessage", "recoverPublicKey"]) {
+    assert.throws(() => createTurboUploader({ signer: { ...BOTH, [method]: "yes" }, maxUsdc: 1 }), {
+      name: "TurboConfigError",
+      message: new RegExp(`signer\\.${method}`),
+    });
+  }
+});
+
+test('maxUsdc with mode "signed" is refused', () => {
+  assert.throws(() => createTurboUploader({ signer: BOTH, mode: "signed", maxUsdc: 1 }), { name: "TurboConfigError", message: /mode "signed"/ });
+});
+
+test("tags over 3072 bytes are refused when x402 is possible, and allowed when it is not", () => {
+  const tags = [{ name: "Note", value: "x".repeat(3500) }];
+  assert.throws(() => createTurboUploader({ signer: BOTH, maxUsdc: 1, tags }), { name: "TurboConfigError", message: /3072/ });
+  assert.throws(() => createTurboUploader({ signer: X402_ONLY, mode: "x402", maxUsdc: 1, tags }), { name: "TurboConfigError", message: /3072/ });
+  createTurboUploader({ signer: BOTH, tags });
+  createTurboUploader({ signer: BOTH, mode: "signed", tags });
 });
 
 /* -------------------------------- URL forms -------------------------------- */
 
-test('uri "ar" returns ar://<id>', async () => {
+test("the default URL is ar://ITEM_ID, with no gateway assumed", async () => {
   const fetch = service();
-  const res = await createTurboUploader({ signer: BOTH, uri: "ar", fetch }).upload(jsonFile());
+  const res = await createTurboUploader({ signer: BOTH, fetch }).upload(jsonFile());
   assert.equal(res.url, `ar://${fetch.calls[0].id}`);
 });
 
-test("a custom gateway is used as given, less a trailing slash", async () => {
+test('uri "https" needs a gateway, and uses it as given, less a trailing slash', async () => {
+  assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https" }), { name: "TurboConfigError", message: /needs `gateway`/ });
   const fetch = service();
-  const res = await createTurboUploader({ signer: BOTH, gateway: "https://example.com/", fetch }).upload(jsonFile());
+  const res = await createTurboUploader({ signer: BOTH, uri: "https", gateway: "https://example.com/", fetch }).upload(jsonFile());
   assert.equal(res.url, `https://example.com/${fetch.calls[0].id}`);
 });
 
-test("testnet uploads to the testnet service and links to its gateway", async () => {
+test("testnet uploads to the testnet service, and still returns ar://", async () => {
   const fetch = service({ testnet: true });
   const res = await createTurboUploader({ signer: BOTH, testnet: true, fetch }).upload(jsonFile());
   assert.deepEqual(fetch.calls.map((c) => c.origin), [TESTNET.uploadUrl]);
-  assert.equal(res.url, `https://ar-io.dev/${fetch.calls[0].id}`);
-});
-
-test("testnet x402 pays on Base Sepolia", async () => {
-  const fetch = service({ testnet: true });
-  const seen = [];
-  const signer = { address: account.address, signTypedData: async (t) => (seen.push(t), account.signTypedData(t)) };
-  await createTurboUploader({ signer, testnet: true, maxUsdc: 50_000n, fetch }).upload(jsonFile());
-  assert.deepEqual(fetch.calls.map((c) => c.origin), [TESTNET.uploadUrl, TESTNET.uploadUrl]);
-  assert.equal(seen[0].domain.chainId, 84532);
+  assert.equal(res.url, `ar://${fetch.calls[0].id}`);
 });
 
 /* ------------------------------- Content-Type ------------------------------- */
@@ -378,7 +414,7 @@ test("aborting mid-upload rejects, on both paths", async () => {
   for (const mode of ["signed", "x402"]) {
     const fetch = hanging();
     const controller = new AbortController();
-    const pending = createTurboUploader({ signer: BOTH, mode, maxUsdc: 50_000n, fetch }).upload(jsonFile(), { signal: controller.signal });
+    const pending = createTurboUploader({ signer: BOTH, mode, maxUsdc: mode === "x402" ? 50_000n : undefined, fetch }).upload(jsonFile(), { signal: controller.signal });
     setTimeout(() => controller.abort(), 50);
     await assert.rejects(pending, { name: "TurboTimeoutError", message: /aborted by the caller's signal/ }, mode);
     assert.equal(fetch.calls.length, 1, `${mode}: the aborted request is not retried`);
@@ -434,10 +470,13 @@ test("the README samples are the files `npm run types` compiles", () => {
   const readme = read("README.md");
   assert.equal(readme.match(/## Quickstart\n\n```ts\n([\s\S]*?)```/)[1], read("test", "types", "quickstart.ts"));
   assert.equal(readme.match(/In a browser, wrap the wallet client:\n\n```ts\n([\s\S]*?)```/)[1], read("test", "types", "browser.ts"));
+  assert.equal(readme.match(/## Testnet\n\n.*\n\n```ts\n([\s\S]*?)```/)[1], read("test", "types", "testnet.ts"));
 });
 
-test("the call in SKILL.md is an excerpt of the compiled quickstart", () => {
-  const blocks = [...read("SKILL.md").matchAll(/```ts\n([\s\S]*?)```/g)].map((m) => m[1]);
-  assert.ok(blocks.length > 0);
-  for (const block of blocks) assert.ok(read("test", "types", "quickstart.ts").includes(block), block);
+test("the call in AGENTS.md and SKILL.md is an excerpt of the compiled quickstart", () => {
+  for (const file of ["AGENTS.md", "SKILL.md"]) {
+    const blocks = [...read(file).matchAll(/```ts\n([\s\S]*?)```/g)].map((m) => m[1]);
+    assert.equal(blocks.length, 1, file);
+    assert.ok(read("test", "types", "quickstart.ts").endsWith(blocks[0]), file);
+  }
 });

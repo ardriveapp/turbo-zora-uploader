@@ -12,9 +12,9 @@ import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
 
-// Production by default: uploads are permanent and public.
-// Small files are free. maxUsdc is the most one larger upload may cost, in
-// USDC base units (6 decimals): 500_000n is 0.50 USDC, paid on Base.
+// Production by default: uploads are permanent and public. URLs are
+// ar://ITEM_ID. Small files are free. maxUsdc is the most one larger upload
+// may cost, in USDC base units (6 decimals): 500_000n is 0.50 USDC, on Base.
 const uploader = createTurboUploader({
   signer: { ...account, recoverPublicKey },
   maxUsdc: 500_000n,
@@ -33,6 +33,9 @@ const { address, hash } = await createCoin({
     ...createMetadataParameters,
     creator: account.address,
     currency: "ETH",
+    // Zora's SDK fetches ar:// through arweave.net, which can lag behind a
+    // fresh upload, so the metadata check is skipped.
+    skipMetadataValidation: true,
   },
   walletClient: createWalletClient({ account, chain: base, transport: http() }),
   publicClient: createPublicClient({ chain: base, transport: http() }),

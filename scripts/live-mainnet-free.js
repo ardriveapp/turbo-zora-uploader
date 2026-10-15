@@ -44,7 +44,8 @@ const line = (k, v) => console.log(`    ${k.padEnd(26)} ${v}`);
 (async () => {
   const account = privateKeyToAccount(generatePrivateKey());
   const signer = { address: account.address, publicKey: account.publicKey, signMessage: account.signMessage, recoverPublicKey };
-  const uploader = createTurboUploader({ signer, mode: "signed" });
+  // An https URL, so Zora's check can run against it here.
+  const uploader = createTurboUploader({ signer, mode: "signed", uri: "https", gateway: "https://turbo-gateway.com" });
 
   const metadata = {
     name: "Turbo Zora uploader check",

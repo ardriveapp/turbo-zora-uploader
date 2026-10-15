@@ -7,8 +7,8 @@ Small files signed by an EVM account are free.
 
 It has one runtime dependency,
 [`@ardrive/turbo-upload`](https://github.com/ardriveapp/turbo-upload), which
-has none. If you are an agent writing an integration, load
-[`SKILL.md`](SKILL.md) first.
+has none. If you are an agent writing an integration, read
+[`AGENTS.md`](AGENTS.md) first.
 
 ```bash
 npm install @ardrive/turbo-zora-uploader
@@ -33,9 +33,9 @@ import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
 
-// Production by default: uploads are permanent and public.
-// Small files are free. maxUsdc is the most one larger upload may cost, in
-// USDC base units (6 decimals): 500_000n is 0.50 USDC, paid on Base.
+// Production by default: uploads are permanent and public. URLs are
+// ar://ITEM_ID. Small files are free. maxUsdc is the most one larger upload
+// may cost, in USDC base units (6 decimals): 500_000n is 0.50 USDC, on Base.
 const uploader = createTurboUploader({
   signer: { ...account, recoverPublicKey },
   maxUsdc: 500_000n,
@@ -54,6 +54,9 @@ const { address, hash } = await createCoin({
     ...createMetadataParameters,
     creator: account.address,
     currency: "ETH",
+    // Zora's SDK fetches ar:// through arweave.net, which can lag behind a
+    // fresh upload, so the metadata check is skipped.
+    skipMetadataValidation: true,
   },
   walletClient: createWalletClient({ account, chain: base, transport: http() }),
   publicClient: createPublicClient({ chain: base, transport: http() }),
@@ -88,7 +91,7 @@ export function uploaderFor(walletClient: WalletClient, address: Address) {
 }
 ```
 
-A browser wallet doesn't expose its public key, so the first signed upload asks
+A browser wallet does not expose its public key, so the first signed upload asks
 the user to sign one extra connect message, and the key is recovered from it.
 To skip that prompt, add `publicKey` to the signer: the 65-byte uncompressed
 key, as hex.
@@ -102,12 +105,12 @@ The uploader has two payment paths:
 | The signer needs | `signMessage` and `recoverPublicKey` (from viem) | `signTypedData`, and you set `maxUsdc` |
 | Who pays | Nobody, for items up to 105 KiB, until the address (or the IP address uploading) has stored 10 MiB. After that, Turbo credits on the address | The signer, in USDC on Base, for every item. There is no free tier |
 | Who owns the item | The signer: it signed the data item (ANS-104 type 3) | The upload service, which signs the item; the signer is recorded as the payer |
-| Wallets | An externally owned account. A smart-contract wallet can't sign data items | Any, including a deployed smart-contract wallet (ERC-1271) |
+| Wallets | An externally owned account. A smart-contract wallet cannot sign data items | Any, including a deployed smart-contract wallet (ERC-1271) |
 | Largest file | Set by the upload service. Items over 10 MiB go up in chunks | About 75 MiB per upload |
 
 `maxUsdc` is the most one upload may cost, in USDC base units (6 decimals):
 `500_000n` is 0.50 USDC. When the service asks for more, the upload fails with
-`TurboPaymentError` before anything is signed. For scale, the service's price
+`TurboPaymentError` before the payment is signed. For scale, the service's price
 estimate (`getUnsignedX402Price` in `@ardrive/turbo-upload`) for a 3 MB image
 was 0.24 USDC on 2026-10-14, and the amount it asks at upload can be higher.
 `maxUsdc` is a positive whole number, as a bigint, a number or a digit string,
@@ -122,7 +125,7 @@ next upload reads it again.
 
 1. x402, when the signer has no `signMessage` or no `recoverPublicKey`. This is
    decided before anything is signed.
-2. Signed, when the item fits the free tier, or when the signer can't pay (no
+2. Signed, when the item fits the free tier, or when the signer cannot pay (no
    `signTypedData`, or no `maxUsdc`).
 3. x402, for anything larger.
 4. If the service refuses a signed item with `TurboPaymentError` (the free
@@ -130,10 +133,14 @@ next upload reads it again.
    same file then goes to x402, and so does every later upload from that
    uploader.
 
-Any other failure is thrown, and nothing is paid. That includes a
-`TurboSignerError`, from a wallet that refuses the prompt or from a
-smart-contract wallet, whose signature can't sign a data item. **For a
-smart-contract wallet, pass `mode: "x402"`.**
+Any other failure is thrown. That includes a `TurboSignerError`, from a wallet
+that refuses the prompt or from a smart-contract wallet, whose signature cannot
+sign a data item. **For a smart-contract wallet, pass `mode: "x402"`.**
+
+A failure on the signed path pays nothing. An x402 upload that fails after its
+payment is sent is not retried, and the payment might have settled: check the
+payer's USDC transfers before you upload the file again. The error from
+`@ardrive/turbo-upload` says so.
 
 This keeps a Zora creator's usual upload, one image and one metadata file, free
 with no setup. A larger file goes through x402 without code changes, as long as
@@ -142,23 +149,39 @@ its price is within `maxUsdc`. To pay only with Turbo credits, set
 
 ## The URL it returns
 
-The default is `https://turbo-gateway.com/ITEM_ID`. Pass `uri: "ar"` for
-`ar://ITEM_ID`, or `gateway` for another https gateway. A gateway with a query
-or a fragment is refused, and so is `gateway` together with `uri: "ar"`.
+The uploader returns `ar://ITEM_ID` by default, and assumes no gateway. The
+coin's metadata then names its image as `ar://ITEM_ID` too, because
+`createMetadataBuilder` puts the uploader's URL into the metadata.
 
-Zora checks the metadata URI before it creates a coin: it fetches the URI and
-requires the content-type to be exactly `application/json` or `text/plain`.
-It reads `ar://` URIs from `http://arweave.net/`, which can take minutes or
-longer to serve a freshly uploaded item, and `createCoin` fails until it does.
-turbo-gateway.com serves a freshly uploaded item as `application/json`: on
-2026-10-14, `scripts/live-mainnet-free.js` saw the check pass 1.2 s after a
-free upload.
+To get `https://GATEWAY/ITEM_ID` instead, pass `uri: "https"` with a `gateway`
+you choose. A gateway with a query or a fragment is refused, and so is
+`gateway` without `uri: "https"`.
+
+## Zora's metadata check and ar://
+
+Before `createCoin` creates a coin, Zora's SDK fetches the metadata URI and
+checks it. It fetches an `ar://` URI through `http://arweave.net/`, which can
+lag behind a fresh upload, and `createCoin` fails until the item is served
+there. So the quickstart sets `skipMetadataValidation: true` in the
+`createCoin` call.
+
+To keep the check, pass `uri: "https"` with your own gateway. The check then
+passes without skipping, provided the gateway serves the metadata with a
+content-type of exactly `application/json`: Zora's SDK refuses anything else,
+including `application/json; charset=utf-8`.
 
 ## Testnet
 
 To try it without writing permanent data, pass `testnet: true`:
 
 ```ts
+import { recoverPublicKey } from "viem";
+import { privateKeyToAccount } from "viem/accounts";
+import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
+
+const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
+
+// Testnet: nothing is permanent, and x402 pays in Base Sepolia USDC.
 const uploader = createTurboUploader({
   signer: { ...account, recoverPublicKey },
   testnet: true,
@@ -166,15 +189,9 @@ const uploader = createTurboUploader({
 });
 ```
 
-On testnet, signed items are free up to a larger size, and x402 pays in Base
-Sepolia USDC. Testnet items are served by `https://ar-io.dev`, not
-turbo-gateway.com, so that is the default gateway there. Nothing on testnet is
-permanent.
-
-**Zora's metadata check fails on testnet.** On 2026-10-14, ar-io.dev served
-JSON as `application/json; charset=utf-8`, which the check refuses. On Base
-Sepolia, set `skipMetadataValidation: true` in the `createCoin` call, or upload
-the metadata with a production uploader.
+On testnet, signed items are free up to a larger size, x402 pays in Base
+Sepolia USDC, and nothing is permanent. URLs are `ar://ITEM_ID`, as on
+production, and Zora's metadata check is skipped the same way.
 
 ## Options
 
@@ -184,27 +201,21 @@ the metadata with a production uploader.
 |---|---|---|
 | `signer` | Required | An EVM signer for one or both paths |
 | `mode` | `"auto"` | `"auto"`, `"signed"` or `"x402"` |
-| `maxUsdc` | None | USDC base units, for each upload. Required for x402 |
-| `uri` | `"https"` | `"https"` or `"ar"` |
-| `gateway` | `https://turbo-gateway.com`, or `https://ar-io.dev` on testnet | https, with no query or fragment. Not with `uri: "ar"` |
+| `maxUsdc` | None | USDC base units, for each upload. Required for x402, refused with `mode: "signed"` |
+| `uri` | `"ar"` | `"ar"` for `ar://ITEM_ID`, or `"https"` for `GATEWAY/ITEM_ID` |
+| `gateway` | None | Required with `uri: "https"`, and refused otherwise. https, with no query or fragment |
 | `testnet` | `false` | Production when `false`: permanent and public |
-| `tags` | `[]` | `{ name, value }` strings, added to every item. The `Content-Type` tag comes from `file.type`, and a `Content-Type` here is refused |
+| `tags` | `[]` | `{ name, value }` strings, added to every item. The `Content-Type` tag comes from `file.type`, and a `Content-Type` here is refused. When the uploader can pay with x402, at most 3072 bytes, the most x402 carries |
 | `fetch` | The global `fetch` | A function, for tests and proxies |
 
 An unknown or invalid option throws `TurboConfigError` when the uploader is
-created. `upload(file, { signal, timeout })` honours both: `timeout` is a
-deadline for the whole upload in milliseconds, and 0 means none, as in the
-SDK's own uploader. A negative `timeout` throws `TurboConfigError`. Other
+created. `null` counts as absent for every option.
+
+`upload(file, { signal, timeout })` honours both: `timeout` is a deadline for
+the whole upload in milliseconds, and 0 means none, as in the SDK's own
+uploader. A negative `timeout` throws `TurboConfigError`. Other
 errors come from `@ardrive/turbo-upload`. For more information, see
 [the turbo-upload errors reference](https://github.com/ardriveapp/turbo-upload#errors).
-
-## Release a version
-
-To release, push a `vVERSION` tag on main, where VERSION is the version in
-`package.json`. [The publish workflow](.github/workflows/publish.yml) publishes
-it with npm provenance. The first version, 0.1.0, is published by hand,
-because npm attaches a trusted publisher only to a package that exists. The
-steps are in the comment at the top of the workflow.
 
 ## License
 

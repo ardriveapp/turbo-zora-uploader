@@ -22,6 +22,7 @@ const OPTIONS = ["signer", "mode", "maxUsdc", "uri", "gateway", "testnet", "tags
 const MODES = ["auto", "signed", "x402"];
 const URIS = ["https", "ar"];
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+const X402_MAX_TAG_BYTES = 3072;
 
 const configError = (message) => new TurboConfigError(`createTurboUploader: ${message}`);
 
@@ -40,17 +41,22 @@ function createTurboUploader(options) {
   if (options === null || typeof options !== "object") throw configError("takes an options object with at least `signer`.");
   const unknown = Object.keys(options).filter((k) => !OPTIONS.includes(k));
   if (unknown.length) throw configError(`unknown option ${unknown.map((k) => `\`${k}\``).join(", ")}. Accepted: ${OPTIONS.join(", ")}.`);
-  const { signer, mode = "auto", maxUsdc, uri = "https", testnet = false, tags = [], fetch } = options;
+  // null means absent, for every option.
+  const given = (key) => options[key] !== undefined && options[key] !== null;
+  const { signer, mode = "auto", uri = "ar", testnet = false, tags = [], fetch } = options;
+  const maxUsdc = given("maxUsdc") ? options.maxUsdc : undefined;
 
   if (!MODES.includes(mode)) throw configError(`\`mode\` must be one of ${MODES.join(", ")}, got ${JSON.stringify(mode)}.`);
   if (!URIS.includes(uri)) throw configError(`\`uri\` must be "https" or "ar", got ${JSON.stringify(uri)}.`);
   if (typeof testnet !== "boolean") throw configError("`testnet` must be true or false.");
   if (fetch !== undefined && typeof fetch !== "function") throw configError("`fetch` must be a function.");
-  if (maxUsdc !== undefined && maxUsdc !== null && !isBaseUnits(maxUsdc)) {
+  if (maxUsdc !== undefined && !isBaseUnits(maxUsdc)) {
     throw configError(`\`maxUsdc\` must be a positive whole number of USDC base units (6 decimals: 0.05 USDC is 50000), got ${typeof maxUsdc === "bigint" ? `${maxUsdc}n` : JSON.stringify(maxUsdc)}.`);
   }
+  if (mode === "signed" && maxUsdc !== undefined) throw configError('`maxUsdc` has no effect with mode "signed", which never pays in USDC. Drop one.');
+  let tagBytes;
   try {
-    serializeTags(tags);
+    tagBytes = serializeTags(tags).length;
   } catch (err) {
     throw configError(`\`tags\` must be an array of { name, value } strings: ${err.message}.`);
   }
@@ -59,14 +65,15 @@ function createTurboUploader(options) {
   }
 
   const endpoints = testnet ? TESTNET : PRODUCTION;
-  if (options.gateway !== undefined) {
-    if (uri === "ar") throw configError('`gateway` has no effect with uri "ar". Pass one or the other.');
-    if (typeof options.gateway !== "string" || !/^https:\/\/[^/?#]+(\/[^?#]*)?$/.test(options.gateway)) {
-      throw configError(`\`gateway\` must be an https:// URL with no query or fragment, which Zora accepts as a metadata URI, got ${JSON.stringify(options.gateway)}.`);
-    }
+  // No gateway is assumed: an https URL names the gateway the caller chose.
+  if (uri === "ar" && given("gateway")) {
+    throw configError('`gateway` has no effect with uri "ar", the default. Pass uri "https" with it, or drop it.');
   }
-  // Testnet items are served by the testnet gateway, not by turbo-gateway.com.
-  const gateway = (options.gateway ?? endpoints.gatewayUrl).replace(/\/+$/, "");
+  if (uri === "https" && (typeof options.gateway !== "string" || !/^https:\/\/[^/?#]+(\/[^?#]*)?$/i.test(options.gateway))) {
+    throw configError(`uri "https" needs \`gateway\`: an https:// URL with no query or fragment, got ${JSON.stringify(options.gateway)}.`);
+  }
+  // Zora accepts a metadata URI only if it starts with "https://" in lower case.
+  const gateway = uri === "https" ? `https://${options.gateway.slice(8).replace(/\/+$/, "")}` : undefined;
 
   if (!signer || typeof signer !== "object") {
     throw configError("`signer` is required: an EVM account with signMessage and recoverPublicKey, signTypedData, or both.");
@@ -74,8 +81,13 @@ function createTurboUploader(options) {
   if (typeof signer.address !== "string" || !ADDRESS.test(signer.address)) {
     throw configError(`\`signer.address\` must be a 0x-prefixed 20-byte hex address, got ${JSON.stringify(signer.address)}.`);
   }
+  for (const method of ["signMessage", "recoverPublicKey", "signTypedData"]) {
+    if (signer[method] !== undefined && typeof signer[method] !== "function") {
+      throw configError(`\`signer.${method}\` must be a function, got ${typeof signer[method]}.`);
+    }
+  }
   const canSign = typeof signer.signMessage === "function" && typeof signer.recoverPublicKey === "function";
-  const canPay = typeof signer.signTypedData === "function" && maxUsdc !== undefined && maxUsdc !== null;
+  const canPay = typeof signer.signTypedData === "function" && maxUsdc !== undefined && mode !== "signed";
   if (mode === "signed" && !canSign) throw configError('mode "signed" needs `signer.signMessage` and `signer.recoverPublicKey` (viem exports recoverPublicKey).');
   if (mode === "x402" && !canPay) throw configError('mode "x402" needs `signer.signTypedData` and `maxUsdc`, the most one upload may pay in USDC base units.');
   if (mode === "auto" && !canSign && !canPay) {
@@ -83,6 +95,10 @@ function createTurboUploader(options) {
       "this signer can neither sign data items (signMessage plus recoverPublicKey) nor pay with x402 " +
         "(signTypedData plus `maxUsdc`, the most one upload may pay in USDC base units).",
     );
+  }
+  // x402 carries at most 3072 bytes of caller tags, so that the service's own tags still fit the item.
+  if (canPay && tagBytes > X402_MAX_TAG_BYTES) {
+    throw configError(`\`tags\` take ${tagBytes} bytes; an x402 upload carries at most ${X402_MAX_TAG_BYTES}.`);
   }
 
   const withFetch = fetch ? { fetch } : {};

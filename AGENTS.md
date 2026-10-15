@@ -1,6 +1,110 @@
 # AGENTS.md
 
-The agent briefing for `@ardrive/turbo-zora-uploader` is [`SKILL.md`](SKILL.md),
-in the Agent Skills format, shipped in this package next to this file. Read it
-before you write code against this package. The briefing is one file so that
-each constraint has one home.
+For an agent wiring `@ardrive/turbo-zora-uploader` into a Zora Coins SDK
+project. The README is the full reference, and [`SKILL.md`](SKILL.md) loads
+this briefing as an Agent Skill.
+
+## Does this apply
+
+It is an `Uploader` for `@zoralabs/coins-sdk`: the object that
+`createMetadataBuilder().upload(uploader)` takes. It stores a coin's image and
+metadata on Arweave through Turbo and returns `ar://ITEM_ID`. It does not
+create, read or trade coins; the SDK does that.
+
+**Use `@ardrive/turbo-upload` instead** for any Arweave upload that is not a
+Zora `Uploader`, such as uploads with other keys, prices, balances or top-ups.
+
+## The one call
+
+This is the README quickstart, from the uploader on. The comments state the
+defaults that cost money or write permanent data:
+
+```ts
+// Production by default: uploads are permanent and public. URLs are
+// ar://ITEM_ID. Small files are free. maxUsdc is the most one larger upload
+// may cost, in USDC base units (6 decimals): 500_000n is 0.50 USDC, on Base.
+const uploader = createTurboUploader({
+  signer: { ...account, recoverPublicKey },
+  maxUsdc: 500_000n,
+});
+
+const png = await readFile("coin.png");
+const { createMetadataParameters } = await createMetadataBuilder()
+  .withName("My Coin")
+  .withSymbol("MYC")
+  .withDescription("Metadata and image stored on Arweave")
+  .withImage(new File([png], "coin.png", { type: "image/png" }))
+  .upload(uploader);
+
+const { address, hash } = await createCoin({
+  call: {
+    ...createMetadataParameters,
+    creator: account.address,
+    currency: "ETH",
+    // Zora's SDK fetches ar:// through arweave.net, which can lag behind a
+    // fresh upload, so the metadata check is skipped.
+    skipMetadataValidation: true,
+  },
+  walletClient: createWalletClient({ account, chain: base, transport: http() }),
+  publicClient: createPublicClient({ chain: base, transport: http() }),
+});
+console.log(createMetadataParameters.metadata.uri, address, hash);
+```
+
+## Choose the mode from the wallet
+
+The wallet that signs decides the signer shape and the mode:
+
+| Wallet | Signer | Options | Who pays |
+|---|---|---|---|
+| An account with a private key (a viem `LocalAccount`) | `{ ...account, recoverPublicKey }` | The defaults, plus `maxUsdc` so files over the free tier can pay | Nobody for small files; USDC on Base above that |
+| A browser wallet that is an externally owned account (a viem `WalletClient`) | The adapter in the README quickstart | The defaults, plus `maxUsdc` | The same |
+| A deployed smart-contract wallet, such as a Coinbase Smart Wallet | `{ address, signTypedData }` | `mode: "x402"` and `maxUsdc`, both required | The wallet, in USDC on Base, for every upload |
+
+## The things that get written wrong
+
+- **Production is the default.** A bare `createTurboUploader({ signer })`
+  writes permanent, public data. Pass `testnet: true` for anything not meant
+  to last.
+- **`maxUsdc` is USDC base units, 6 decimals, for each upload.** `500_000n` is
+  0.50 USDC, not 500,000 dollars. A decimal such as `0.05` is refused. Without
+  `maxUsdc` there is no USDC path, and with `mode: "signed"` it is refused.
+- **`recoverPublicKey` is part of the signer.** Import it from `viem`. Without
+  it, the signer can only pay with x402.
+- **URLs are `ar://ITEM_ID`, so set `skipMetadataValidation: true`** in the
+  `createCoin` call. Zora's SDK fetches `ar://` through arweave.net, which can
+  lag behind a fresh upload. To keep the check, pass `uri: "https"` with a
+  `gateway` that serves JSON as exactly `application/json`. No gateway is
+  assumed: `uri: "https"` without `gateway` is refused.
+- **A smart-contract wallet needs `mode: "x402"`.** It cannot sign data items.
+  In `mode: "auto"`, a signer with `signMessage` and `recoverPublicKey` takes
+  the signed path for small files, and a smart wallet's signature then fails
+  with `TurboSignerError`, which is not retried with x402.
+- **The `Content-Type` tag comes from `file.type`.** Set the `File`'s type. A
+  `Content-Type` in `tags` is refused, and so are tags over 3072 bytes when the
+  uploader can pay with x402.
+- **An x402 upload that fails after paying is not retried.** The payment might
+  have settled. Check the payer's USDC transfers before uploading again.
+- **`null` counts as absent** for every option.
+
+## Errors
+
+The errors are `@ardrive/turbo-upload`'s classes, which this package does not
+re-export, so check `err.name`:
+
+| `err.name` | Catch it when | Then |
+|---|---|---|
+| `TurboConfigError` | `createTurboUploader` or `upload` got a bad option | Fix the option. Retrying does not help |
+| `TurboPaymentError` | The address cannot pay: the free quota is spent with no credits and the uploader has no x402 path, or the x402 price is over `maxUsdc` | Raise `maxUsdc` or fund the wallet. Retrying does not help |
+| `TurboSignerError` | The wallet refused to sign, or a smart-contract wallet was asked to sign a data item | For a smart-contract wallet, use `mode: "x402"`. Nothing was uploaded |
+| `TurboTimeoutError` | `timeout` passed, or `signal` aborted, during a request | Retry if the caller still wants the upload. After an x402 payment, check the payer's USDC transfers first |
+| `AbortError`, `TimeoutError` | The signal had already fired before a request started | Nothing was sent |
+
+Any other error, such as `TurboHTTPError` or `TurboNetworkError`, is described
+in [the turbo-upload errors reference](https://github.com/ardriveapp/turbo-upload#errors).
+
+## Exports
+
+The package exports one function, `createTurboUploader(options)`, and these
+types: `TurboUploaderOptions`, `TurboUploader`, `TurboUploadResult`,
+`TurboZoraSigner` and `ValidMetadataURI`.

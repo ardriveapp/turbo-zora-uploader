@@ -17,6 +17,7 @@
   "files": [
     "check.ts",
     "quickstart.ts",
-    "browser.ts"
+    "browser.ts",
+    "testnet.ts"
   ]
 }

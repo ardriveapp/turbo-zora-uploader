@@ -1,11 +1,15 @@
 // Stores a coin's image and metadata through the free signed path, then builds
 // the call that createCoin takes. It sends a transaction only with --send.
 //
-//   PRIVATE_KEY=0x... node examples/node-eoa.mjs [--production] [--send]
+//   PRIVATE_KEY=HEX_KEY node examples/node-eoa.mjs [--send]
+//   PRIVATE_KEY=HEX_KEY node examples/node-eoa.mjs \
+//     --production --yes-production [--send]
 //
-// Testnet unless you pass --production. Production uploads are permanent and
-// public. Small files are free on both, so this example pays nothing for
-// storage; --send pays gas on Base Sepolia, or on Base with --production.
+// Replace HEX_KEY with a 0x-prefixed hex private key.
+//
+// Testnet by default. --production writes permanent, public data even without
+// --send, so it also needs --yes-production. Small files are free on both, so
+// storage costs nothing here; --send pays gas on Base Sepolia, or on Base.
 import { createCoin, createMetadataBuilder } from "@zoralabs/coins-sdk";
 import {
   createPublicClient,
@@ -19,6 +23,10 @@ import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const production = process.argv.includes("--production");
 const send = process.argv.includes("--send");
+if (production && !process.argv.includes("--yes-production")) {
+  console.error("--production writes permanent data. Add --yes-production.");
+  process.exit(2);
+}
 if (!process.env.PRIVATE_KEY) {
   console.error("Set PRIVATE_KEY to a 0x-prefixed hex private key.");
   process.exit(2);
@@ -26,7 +34,7 @@ if (!process.env.PRIVATE_KEY) {
 const account = privateKeyToAccount(process.env.PRIVATE_KEY);
 
 // No maxUsdc, so this uploader has no USDC path: every file is signed by the
-// account, which owns the stored items.
+// account, which owns the stored items. URLs are ar://ITEM_ID, the default.
 const uploader = createTurboUploader({
   signer: { ...account, recoverPublicKey },
   testnet: !production,
@@ -57,9 +65,9 @@ const call = {
   creator: account.address,
   currency: "ETH",
   chainId: chain.id,
-  // Zora's metadata check refuses the testnet gateway's content-type (it adds
-  // a charset), so testnet skips it. Don't skip it on Base.
-  skipMetadataValidation: !production,
+  // Zora's SDK fetches ar:// through arweave.net, which can lag behind a
+  // fresh upload, so the metadata check is skipped.
+  skipMetadataValidation: true,
 };
 console.log("createCoin call", call);
 

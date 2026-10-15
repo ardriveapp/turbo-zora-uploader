@@ -33,6 +33,7 @@ const ALLOWED_HOSTS = new Set([
   "api-sdk.zora.engineering", // coin calldata; the chain is chosen by chainId, checked below
 ]);
 const CHAIN_ID = 84532;
+const GATEWAY = "https://ar-io.dev";
 const USDC_CAP = 1_000_000n; // 1 USDC
 const ETH_CAP = 20_000_000_000_000_000n; // 0.02 ETH
 const SEPOLIA_USDC = "0x036CbD53842c5426634e7929541eC2318f3dCF7e";
@@ -129,7 +130,8 @@ const metadataFile = (image) =>
   console.log("\n[signed: fresh key, free tier]");
   const fresh = privateKeyToAccount(generatePrivateKey());
   line("address", fresh.address);
-  const signed = createTurboUploader({ signer: { ...fresh, recoverPublicKey }, mode: "signed", testnet: true });
+  // https URLs on the testnet gateway, so the items can be read back here.
+  const signed = createTurboUploader({ signer: { ...fresh, recoverPublicKey }, mode: "signed", testnet: true, uri: "https", gateway: GATEWAY });
   const png = new File([PNG], "pixel.png", { type: "image/png" });
   const img = await signed.upload(png);
   line("png", `${img.url} (${img.size} bytes, ${img.mimeType})`);
@@ -138,9 +140,11 @@ const metadataFile = (image) =>
   line("json", `${meta.url} (${meta.size} bytes, ${meta.mimeType})`);
   // Auto mode with both paths available: the free signed path, so the same id
   // as above (type 3 signatures are deterministic). maxUsdc 1 cannot pay for anything.
+  // Auto mode and the default URL form: ar://, same id.
   const auto = await createTurboUploader({ signer: { ...fresh, recoverPublicKey }, maxUsdc: 1n, testnet: true }).upload(png);
-  line("auto, png", `${auto.url === img.url ? "signed, same id" : `DIFFERENT: ${auto.url}`}`);
-  if (auto.url !== img.url) failures.push(`auto mode returned ${auto.url}, not ${img.url}`);
+  const expected = `ar://${img.url.split("/").pop()}`;
+  line("auto, png", `${auto.url === expected ? `signed, same id, ${auto.url}` : `DIFFERENT: ${auto.url}`}`);
+  if (auto.url !== expected) failures.push(`auto mode returned ${auto.url}, not ${expected}`);
   let jsonType;
   for (const [label, res, bytes] of [["png", img, PNG], ["json", meta, await json.arrayBuffer()]]) {
     const back = await readBack(res.url, bytes);
@@ -157,27 +161,31 @@ const metadataFile = (image) =>
   if ((verdict === "VALID") !== exact) failures.push(`zora check: ${verdict} with content-type "${jsonType}"`);
   if (!exact) skipped.push(`Zora's metadata check on testnet: ${new URL(meta.url).host} serves JSON as "${jsonType}"`);
 
-  console.log("\n[zora: metadata and image through the uploader]");
+  console.log("\n[zora: metadata and image through the uploader, as ar://]");
   const built = await createMetadataBuilder()
     .withName(`Turbo test ${runId}`)
     .withSymbol("TURBOT")
     .withDescription("Metadata and image stored through @ardrive/turbo-zora-uploader on testnet")
     .withImage(png)
-    .upload(signed);
+    .upload(createTurboUploader({ signer: { ...fresh, recoverPublicKey }, testnet: true }));
+  if (!built.url.startsWith("ar://") || !built.metadata.image.startsWith("ar://")) failures.push(`not ar://: ${built.url}, ${built.metadata.image}`);
   line("metadata", built.url);
   line("image", built.metadata.image);
 
   const keyPath = process.env.PAYER_KEY_FILE;
   const payer = keyPath ? privateKeyToAccount(readKey(keyPath)) : fresh;
-  const coinArgs = { ...built.createMetadataParameters, creator: payer.address, currency: "ETH", chainId: CHAIN_ID };
+  // Zora's SDK fetches ar:// through arweave.net, which can lag behind a fresh upload, so the check is skipped.
+  const coinArgs = { ...built.createMetadataParameters, creator: payer.address, currency: "ETH", chainId: CHAIN_ID, skipMetadataValidation: true };
   let call;
   try {
     call = await createCoinCall(coinArgs);
     line("createCoinCall", `predicted coin ${call.predictedCoinAddress}`);
   } catch (err) {
-    const known = !exact && /not a valid JSON or plain text response type/.test(err.message);
-    line("createCoinCall", `${known ? "refused, as expected on testnet" : "FAILED"}: ${err.message}`.slice(0, 400));
-    if (!known) failures.push(`createCoinCall: ${err.message}`);
+    // Zora's API has answered 500 for chain 84532 since 2026-10-14: its factory's coinAddress view reverts.
+    const known = /Failed to create content calldata/.test(err.message);
+    line("createCoinCall", `${known ? "refused by Zora's API for Base Sepolia" : "FAILED"}: ${err.message}`.slice(0, 400));
+    if (known) skipped.push("createCoinCall: Zora's API refused Base Sepolia");
+    else failures.push(`createCoinCall: ${err.message}`);
   }
 
   if (!keyPath) {
@@ -208,7 +216,7 @@ const metadataFile = (image) =>
     skipped.push("x402 uploads: the payer holds no Base Sepolia USDC, so the quote was taken and nothing signed");
   } else {
     const maxUsdc = 200_000n; // 0.2 USDC per upload, two uploads, under the 1 USDC cap
-    const paid = createTurboUploader({ signer: sepoliaOnly(payer), mode: "x402", maxUsdc, testnet: true });
+    const paid = createTurboUploader({ signer: sepoliaOnly(payer), mode: "x402", maxUsdc, testnet: true, uri: "https", gateway: GATEWAY });
     for (const [label, file] of [["png", png], ["json", metadataFile(`ar://x402-${runId}`)]]) {
       if (usdcStart - (await usdc()) + maxUsdc > USDC_CAP) {
         skipped.push(`x402 ${label}: would pass the 1 USDC cap`);

@@ -36,26 +36,24 @@ interface CommonOptions {
   testnet?: boolean;
   /**
    * The tags added to every item, after the Content-Type tag taken from
-   * `file.type`. A Content-Type tag here is refused.
+   * `file.type`. A Content-Type tag here is refused, and so are tags over 3072
+   * bytes when the uploader can pay with x402.
    */
   tags?: Tag[];
   /** The fetch implementation passed to @ardrive/turbo-upload, for tests and proxies. */
   fetch?: typeof fetch;
 }
 
-/** The payment mode, and the most an x402 upload may cost. */
+/** The payment mode, and the most an x402 upload may cost. null means absent. */
 type ModeOptions =
   | {
       /**
-       * The payment mode.
-       *
-       * - "auto" (the default): signed when the signer can sign data items and
-       *   the item fits the free tier, x402 otherwise. When the service refuses
-       *   a signed item with TurboPaymentError, the file goes to x402 if the
-       *   signer can pay. A TurboSignerError is thrown.
-       * - "signed": every file is signed, and nothing is paid in USDC.
+       * The payment mode "auto" (the default): signed when the signer can sign
+       * data items and the item fits the free tier, x402 otherwise. When the
+       * service refuses a signed item with TurboPaymentError, the file goes to
+       * x402 if the signer can pay. A TurboSignerError is thrown.
        */
-      mode?: "auto" | "signed";
+      mode?: "auto";
       /**
        * The most one x402 upload may cost, in USDC base units (6 decimals):
        * 500000 is 0.50 USDC. A positive whole number. If null or absent, the
@@ -64,30 +62,35 @@ type ModeOptions =
       maxUsdc?: IntegerAmount | null;
     }
   | {
+      /** The payment mode "signed": every file is signed, and nothing is paid in USDC. */
+      mode: "signed";
+      /** Refused with mode "signed". */
+      maxUsdc?: null;
+    }
+  | {
       /** The payment mode "x402": every file is paid for in USDC. Required for a smart-contract wallet. */
       mode: "x402";
       /** The most one upload may cost, in USDC base units (6 decimals): 500000 is 0.50 USDC. */
       maxUsdc: IntegerAmount;
     };
 
-/** The URL form returned for each item. */
+/** The URL form returned for each item. null means absent. */
 type UriOptions =
   | {
       /**
-       * The "https" form (the default): `GATEWAY/ITEM_ID`, which Zora's
-       * metadata check reads right after upload.
+       * The "ar" form (the default): `ar://ITEM_ID`. No gateway is assumed.
+       * Zora's SDK reads it through arweave.net, which can lag behind a fresh
+       * upload, so skip Zora's metadata check for it.
        */
-      uri?: "https";
-      /**
-       * The https gateway for the URL, with no query or fragment. The default
-       * is https://turbo-gateway.com, or https://ar-io.dev with `testnet`.
-       */
-      gateway?: string;
+      uri?: "ar";
+      /** Refused with uri "ar". */
+      gateway?: null;
     }
   | {
-      /** The "ar" form: `ar://ITEM_ID`, which Zora reads from arweave.net. */
-      uri: "ar";
-      gateway?: never;
+      /** The "https" form: `GATEWAY/ITEM_ID`, for a gateway you choose. */
+      uri: "https";
+      /** The https gateway for the URL, with no query or fragment. Required. */
+      gateway: string;
     };
 
 /** The options for `createTurboUploader`. */
@@ -119,6 +122,6 @@ export interface TurboUploader {
 /**
  * Creates an uploader for the Zora Coins SDK. Throws TurboConfigError, from
  * @ardrive/turbo-upload, for a bad or unknown option. Production is the
- * default.
+ * default, and URLs are `ar://ITEM_ID` unless `uri` is "https".
  */
 export declare function createTurboUploader(options: TurboUploaderOptions): TurboUploader;
