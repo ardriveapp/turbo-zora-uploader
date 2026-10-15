@@ -25,6 +25,7 @@ export type TurboZoraSigner =
   | (EvmSigner & Partial<Pick<X402Signer, "signTypedData">>)
   | (X402Signer & Partial<Omit<EvmSigner, "address">>);
 
+/** The options every mode and URL form shares. null means absent, for every option. */
 interface CommonOptions {
   /** The account that signs data items, pays with x402, or both. */
   signer: TurboZoraSigner;
@@ -33,15 +34,15 @@ interface CommonOptions {
    * x402 pays in Base Sepolia USDC. If `false` (the default), uploads to
    * production, where items are permanent and public.
    */
-  testnet?: boolean;
+  testnet?: boolean | null;
   /**
    * The tags added to every item, after the Content-Type tag taken from
    * `file.type`. A Content-Type tag here is refused, and so are tags over 3072
    * bytes when the uploader can pay with x402.
    */
-  tags?: Tag[];
+  tags?: Tag[] | null;
   /** The fetch implementation passed to @ardrive/turbo-upload, for tests and proxies. */
-  fetch?: typeof fetch;
+  fetch?: typeof fetch | null;
 }
 
 /** The payment mode, and the most an x402 upload may cost. null means absent. */
@@ -53,7 +54,7 @@ type ModeOptions =
        * service refuses a signed item with TurboPaymentError, the file goes to
        * x402 if the signer can pay. A TurboSignerError is thrown.
        */
-      mode?: "auto";
+      mode?: "auto" | null;
       /**
        * The most one x402 upload may cost, in USDC base units (6 decimals):
        * 500000 is 0.50 USDC. A positive whole number. If null or absent, the
@@ -64,7 +65,7 @@ type ModeOptions =
   | {
       /** The payment mode "signed": every file is signed, and nothing is paid in USDC. */
       mode: "signed";
-      /** Refused with mode "signed". */
+      /** A value that must be absent: `maxUsdc` is refused with mode "signed". */
       maxUsdc?: null;
     }
   | {
@@ -74,23 +75,29 @@ type ModeOptions =
       maxUsdc: IntegerAmount;
     };
 
-/** The URL form returned for each item. null means absent. */
+/** The URL form returned for each item. */
 type UriOptions =
   | {
       /**
-       * The "ar" form (the default): `ar://ITEM_ID`. No gateway is assumed.
-       * Zora's SDK reads it through arweave.net, which can lag behind a fresh
-       * upload, so skip Zora's metadata check for it.
+       * The URL form. "auto" (the default) returns `GATEWAY/ITEM_ID` for a
+       * file of type application/json, which is the metadata JSON Zora's
+       * builder uploads, and `ar://ITEM_ID` for everything else. Zora's create
+       * API takes only an https or ipfs metadata pointer. "https" returns
+       * `GATEWAY/ITEM_ID` for every file.
        */
-      uri?: "ar";
-      /** Refused with uri "ar". */
-      gateway?: null;
+      uri?: "auto" | "https" | null;
+      /**
+       * The https gateway, with no credentials, spaces, query or fragment. The
+       * default is https://turbo-gateway.com, or https://ar-io.dev with
+       * `testnet`, whose JSON fails Zora's metadata check.
+       */
+      gateway?: string | null;
     }
   | {
-      /** The "https" form: `GATEWAY/ITEM_ID`, for a gateway you choose. */
-      uri: "https";
-      /** The https gateway for the URL, with no query or fragment. Required. */
-      gateway: string;
+      /** The URL form "ar": `ar://ITEM_ID` for every file. It cannot create a Zora coin. */
+      uri: "ar";
+      /** A value that must be absent: `gateway` is refused with uri "ar". */
+      gateway?: null;
     };
 
 /** The options for `createTurboUploader`. */
@@ -98,7 +105,7 @@ export type TurboUploaderOptions = CommonOptions & ModeOptions & UriOptions;
 
 /** What one upload returns: the SDK's `UploadResult`. */
 export interface TurboUploadResult {
-  /** The item's URL, in the form `uri` chose. */
+  /** The item's URL, in the form that `uri` chose. */
   url: ValidMetadataURI;
   /** The size of the file, from `file.size`. */
   size: number | undefined;
@@ -122,6 +129,6 @@ export interface TurboUploader {
 /**
  * Creates an uploader for the Zora Coins SDK. Throws TurboConfigError, from
  * @ardrive/turbo-upload, for a bad or unknown option. Production is the
- * default, and URLs are `ar://ITEM_ID` unless `uri` is "https".
+ * default. The metadata JSON gets a gateway URL and media gets `ar://ITEM_ID`.
  */
 export declare function createTurboUploader(options: TurboUploaderOptions): TurboUploader;

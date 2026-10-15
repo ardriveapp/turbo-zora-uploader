@@ -9,7 +9,9 @@
 //
 // Testnet by default. --production writes permanent, public data even without
 // --send, so it also needs --yes-production. Small files are free on both, so
-// storage costs nothing here; --send pays gas on Base Sepolia, or on Base.
+// storage costs nothing here; --send pays gas on Base, or on Base Sepolia.
+// On testnet, --send fails Zora's metadata check, because the testnet gateway
+// serves JSON with a charset.
 import { createCoin, createMetadataBuilder } from "@zoralabs/coins-sdk";
 import {
   createPublicClient,
@@ -34,7 +36,7 @@ if (!process.env.PRIVATE_KEY) {
 const account = privateKeyToAccount(process.env.PRIVATE_KEY);
 
 // No maxUsdc, so this uploader has no USDC path: every file is signed by the
-// account, which owns the stored items. URLs are ar://ITEM_ID, the default.
+// account, which owns the stored items.
 const uploader = createTurboUploader({
   signer: { ...account, recoverPublicKey },
   testnet: !production,
@@ -56,6 +58,8 @@ const { createMetadataParameters, metadata } = await createMetadataBuilder()
   .withImage(new File([png], "coin.png", { type: "image/png" }))
   .upload(uploader);
 
+// The metadata pointer is a gateway URL, because Zora's create API takes only
+// https or ipfs. The image inside it is ar://ITEM_ID, which names no gateway.
 console.log("image   ", metadata.image);
 console.log("metadata", createMetadataParameters.metadata.uri);
 
@@ -65,9 +69,6 @@ const call = {
   creator: account.address,
   currency: "ETH",
   chainId: chain.id,
-  // Zora's SDK fetches ar:// through arweave.net, which can lag behind a
-  // fresh upload, so the metadata check is skipped.
-  skipMetadataValidation: true,
 };
 console.log("createCoin call", call);
 

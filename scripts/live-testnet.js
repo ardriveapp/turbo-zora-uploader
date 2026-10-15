@@ -161,31 +161,49 @@ const metadataFile = (image) =>
   if ((verdict === "VALID") !== exact) failures.push(`zora check: ${verdict} with content-type "${jsonType}"`);
   if (!exact) skipped.push(`Zora's metadata check on testnet: ${new URL(meta.url).host} serves JSON as "${jsonType}"`);
 
-  console.log("\n[zora: metadata and image through the uploader, as ar://]");
+  console.log("\n[zora: metadata and image through the default uploader]");
   const built = await createMetadataBuilder()
     .withName(`Turbo test ${runId}`)
     .withSymbol("TURBOT")
     .withDescription("Metadata and image stored through @ardrive/turbo-zora-uploader on testnet")
     .withImage(png)
     .upload(createTurboUploader({ signer: { ...fresh, recoverPublicKey }, testnet: true }));
-  if (!built.url.startsWith("ar://") || !built.metadata.image.startsWith("ar://")) failures.push(`not ar://: ${built.url}, ${built.metadata.image}`);
   line("metadata", built.url);
   line("image", built.metadata.image);
+  // Zora's create API takes only an https or ipfs pointer; media stays ar://.
+  if (!built.url.startsWith(`${GATEWAY}/`)) failures.push(`the metadata pointer is ${built.url}, not on ${GATEWAY}`);
+  if (!built.metadata.image.startsWith("ar://")) failures.push(`the image is ${built.metadata.image}, not ar://`);
 
   const keyPath = process.env.PAYER_KEY_FILE;
   const payer = keyPath ? privateKeyToAccount(readKey(keyPath)) : fresh;
-  // Zora's SDK fetches ar:// through arweave.net, which can lag behind a fresh upload, so the check is skipped.
-  const coinArgs = { ...built.createMetadataParameters, creator: payer.address, currency: "ETH", chainId: CHAIN_ID, skipMetadataValidation: true };
+  const coinArgs = { ...built.createMetadataParameters, creator: payer.address, currency: "ETH", chainId: CHAIN_ID };
   let call;
   try {
-    call = await createCoinCall(coinArgs);
-    line("createCoinCall", `predicted coin ${call.predictedCoinAddress}`);
+    await createCoinCall(coinArgs);
+    failures.push("createCoinCall passed Zora's metadata check on a gateway expected to fail it");
   } catch (err) {
-    // Zora's API has answered 500 for chain 84532 since 2026-10-14: its factory's coinAddress view reverts.
-    const known = /Failed to create content calldata/.test(err.message);
-    line("createCoinCall", `${known ? "refused by Zora's API for Base Sepolia" : "FAILED"}: ${err.message}`.slice(0, 400));
-    if (known) skipped.push("createCoinCall: Zora's API refused Base Sepolia");
-    else failures.push(`createCoinCall: ${err.message}`);
+    const known = !exact && err.message === "Metadata is not a valid JSON or plain text response type";
+    line("createCoinCall", `${known ? "refused by the metadata check, as expected on testnet" : "FAILED"}: ${err.message}`.slice(0, 400));
+    if (!known) failures.push(`createCoinCall: ${err.message}`);
+  }
+  // Testnet only: past the metadata check, which the testnet gateway fails, to reach Zora's create API.
+  const probeArgs = { ...coinArgs, skipMetadataValidation: true };
+  try {
+    call = await createCoinCall(probeArgs);
+    line("create API", `predicted coin ${call.predictedCoinAddress}`);
+  } catch (err) {
+    // The SDK hides the API's answer, so ask the API directly for it.
+    const res = await fetch("https://api-sdk.zora.engineering/create/content", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...built.createMetadataParameters, creator: payer.address, currency: "ETH", chainId: CHAIN_ID }),
+    });
+    const said = (await res.text()).slice(0, 300);
+    // The one known refusal on Base Sepolia: the factory's coinAddress view reverts.
+    const known = res.status === 500 && /The contract function \\"coinAddress\\" reverted/.test(said);
+    line("create API", `${known ? "refused: the Base Sepolia factory's coinAddress reverts" : `FAILED: ${err.message}`} (HTTP ${res.status} ${said.slice(0, 120)})`);
+    if (known) skipped.push("Zora's create API: the Base Sepolia factory's coinAddress view reverts");
+    else failures.push(`create API: ${err.message}; HTTP ${res.status} ${said}`);
   }
 
   if (!keyPath) {
@@ -248,7 +266,7 @@ const metadataFile = (image) =>
     } else {
       const wallet = createWalletClient({ account: payer, chain: baseSepolia, transport: http(RPC) });
       const res = await createCoin({
-        call: coinArgs,
+        call: probeArgs,
         walletClient: wallet,
         publicClient: pub,
       });

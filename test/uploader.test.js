@@ -85,7 +85,7 @@ test("auto: a small file goes the free signed path", async () => {
   const tx = fetch.calls[1];
   assert.equal(tx.origin, PRODUCTION.uploadUrl);
   assert.equal(Buffer.from(tx.data).toString("utf8"), await file.text());
-  assert.deepEqual(res, { url: `ar://${tx.id}`, size: file.size, mimeType: "application/json" });
+  assert.deepEqual(res, { url: `https://turbo-gateway.com/${tx.id}`, size: file.size, mimeType: "application/json" });
 });
 
 test("auto: a file over the free limit goes to x402", async () => {
@@ -127,7 +127,7 @@ test("auto: a spent free quota falls back to x402, and later uploads go there di
   const fetch = service({ onTx: () => json(402, { error: "Insufficient balance" }) });
   const uploader = createTurboUploader({ signer: BOTH, maxUsdc: 50_000n, fetch });
   const first = await uploader.upload(jsonFile());
-  assert.equal(first.url, `ar://${X402_ID}`);
+  assert.equal(first.url, `https://turbo-gateway.com/${X402_ID}`);
   assert.deepEqual(fetch.paths(), ["/v1/info", "/v1/tx", X402_ROUTE, X402_ROUTE]);
   await uploader.upload(jsonFile());
   assert.deepEqual(fetch.paths().slice(4), [X402_ROUTE, X402_ROUTE]);
@@ -152,7 +152,7 @@ test("x402 mode is the way out for a smart-contract wallet", async () => {
   const fetch = service();
   const smartWallet = { address: account.address, signMessage: async () => `0x${"ab".repeat(100)}`, recoverPublicKey, signTypedData: account.signTypedData };
   const res = await createTurboUploader({ signer: smartWallet, mode: "x402", maxUsdc: 50_000n, fetch }).upload(jsonFile());
-  assert.equal(res.url, `ar://${X402_ID}`);
+  assert.equal(res.url, `https://turbo-gateway.com/${X402_ID}`);
   assert.deepEqual(fetch.paths(), [X402_ROUTE, X402_ROUTE]);
 });
 
@@ -265,7 +265,7 @@ test("other bad options are startup errors", () => {
 });
 
 test("maxUsdc must be whole base units", () => {
-  for (const bad of [0.05, 0, -1, "0.05", "1e6", 0n, NaN, {}]) {
+  for (const bad of [0.05, 0, -1, "0", "0.05", "1e6", 0n, NaN, {}]) {
     assert.throws(() => createTurboUploader({ signer: BOTH, maxUsdc: bad }), { name: "TurboConfigError", message: /base units/ }, String(bad));
   }
   for (const good of [1, 50_000, "50000", 50_000n]) createTurboUploader({ signer: BOTH, maxUsdc: good });
@@ -292,19 +292,19 @@ test("a Content-Type tag is refused: it comes from file.type", () => {
   });
 });
 
-test("a gateway with a query or fragment, or with uri \"ar\", is refused", () => {
-  for (const gateway of ["https://example.com/?a=1", "https://example.com#x", "https://example.com/?"]) {
-    assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https", gateway }), { name: "TurboConfigError", message: /query or fragment/ }, gateway);
+test("a gateway with a query, a fragment, credentials or a space, or with uri \"ar\", is refused", () => {
+  for (const gateway of ["https://example.com/?a=1", "https://example.com#x", "https://example.com/?", "https://user:pass@example.com", "https://exa mple.com", "http://example.com"]) {
+    assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https", gateway }), { name: "TurboConfigError", message: /gateway/ }, gateway);
   }
-  assert.throws(() => createTurboUploader({ signer: BOTH, gateway: "https://example.com" }), { name: "TurboConfigError", message: /uri "ar"/ });
   assert.throws(() => createTurboUploader({ signer: BOTH, uri: "ar", gateway: "https://example.com" }), { name: "TurboConfigError", message: /uri "ar"/ });
 });
 
-test("null means absent, for gateway as for maxUsdc", async () => {
+test("null means absent, for every option", async () => {
   const fetch = service();
-  const res = await createTurboUploader({ signer: BOTH, gateway: null, maxUsdc: null, fetch }).upload(jsonFile());
-  assert.equal(res.url, `ar://${fetch.calls[0].id}`);
-  assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https", gateway: null }), { name: "TurboConfigError", message: /needs `gateway`/ });
+  const options = { signer: BOTH, mode: null, maxUsdc: null, uri: null, gateway: null, testnet: null, tags: null, fetch };
+  const res = await createTurboUploader(options).upload(jsonFile());
+  assert.equal(res.url, `https://turbo-gateway.com/${fetch.calls[0].id}`);
+  assert.deepEqual(fetch.paths(), ["/v1/tx"], "mode auto, no x402 path, production");
 });
 
 test("an HTTPS scheme in any case is accepted, and returned in lower case", async () => {
@@ -326,6 +326,16 @@ test('maxUsdc with mode "signed" is refused', () => {
   assert.throws(() => createTurboUploader({ signer: BOTH, mode: "signed", maxUsdc: 1 }), { name: "TurboConfigError", message: /mode "signed"/ });
 });
 
+test("tags of exactly 3072 bytes are allowed with x402, and one byte more is refused", () => {
+  const { serializeTags } = require("@ardrive/turbo-upload");
+  const tags = (n) => [{ name: "Note", value: "x".repeat(n) }];
+  let n = 3000;
+  while (serializeTags(tags(n + 1)).length <= 3072) n++;
+  assert.equal(serializeTags(tags(n)).length, 3072);
+  createTurboUploader({ signer: BOTH, maxUsdc: 1, tags: tags(n) });
+  assert.throws(() => createTurboUploader({ signer: BOTH, maxUsdc: 1, tags: tags(n + 1) }), { name: "TurboConfigError", message: /3072/ });
+});
+
 test("tags over 3072 bytes are refused when x402 is possible, and allowed when it is not", () => {
   const tags = [{ name: "Note", value: "x".repeat(3500) }];
   assert.throws(() => createTurboUploader({ signer: BOTH, maxUsdc: 1, tags }), { name: "TurboConfigError", message: /3072/ });
@@ -336,24 +346,59 @@ test("tags over 3072 bytes are refused when x402 is possible, and allowed when i
 
 /* -------------------------------- URL forms -------------------------------- */
 
-test("the default URL is ar://ITEM_ID, with no gateway assumed", async () => {
+const pngFile = () => new File([new Uint8Array(10)], "i.png", { type: "image/png" });
+
+test("auto: the metadata JSON is on the gateway, and media is ar://", async () => {
   const fetch = service();
-  const res = await createTurboUploader({ signer: BOTH, fetch }).upload(jsonFile());
-  assert.equal(res.url, `ar://${fetch.calls[0].id}`);
+  const uploader = createTurboUploader({ signer: BOTH, fetch });
+  const json = await uploader.upload(jsonFile());
+  const png = await uploader.upload(pngFile());
+  assert.equal(json.url, `https://turbo-gateway.com/${fetch.calls[0].id}`);
+  assert.equal(png.url, `ar://${fetch.calls[1].id}`);
+  const typed = await uploader.upload(new File(["{}"], "m.json", { type: "Application/JSON; charset=utf-8" }));
+  assert.equal(typed.url, `https://turbo-gateway.com/${fetch.calls[2].id}`);
 });
 
-test('uri "https" needs a gateway, and uses it as given, less a trailing slash', async () => {
-  assert.throws(() => createTurboUploader({ signer: BOTH, uri: "https" }), { name: "TurboConfigError", message: /needs `gateway`/ });
+test("Zora's builder gets an https pointer to metadata whose image is ar://", async () => {
+  const { createMetadataBuilder } = require("@zoralabs/coins-sdk");
   const fetch = service();
-  const res = await createTurboUploader({ signer: BOTH, uri: "https", gateway: "https://example.com/", fetch }).upload(jsonFile());
-  assert.equal(res.url, `https://example.com/${fetch.calls[0].id}`);
+  const built = await createMetadataBuilder()
+    .withName("Coin")
+    .withSymbol("C")
+    .withDescription("d")
+    .withImage(pngFile())
+    .upload(createTurboUploader({ signer: BOTH, fetch }));
+  const [image, metadata] = fetch.calls.map((c) => c.id);
+  // Zora's create API refuses a pointer that is not https:// or ipfs://.
+  assert.match(built.createMetadataParameters.metadata.uri, /^(https|ipfs):\/\//);
+  assert.equal(built.createMetadataParameters.metadata.uri, `https://turbo-gateway.com/${metadata}`);
+  assert.equal(built.metadata.image, `ar://${image}`);
+  const stored = JSON.parse(Buffer.from(fetch.calls[1].data).toString("utf8"));
+  assert.equal(stored.image, `ar://${image}`);
 });
 
-test("testnet uploads to the testnet service, and still returns ar://", async () => {
+test('uri "ar" returns ar:// for everything, and uri "https" the gateway for everything', async () => {
+  const fetch = service();
+  const ar = await createTurboUploader({ signer: BOTH, uri: "ar", fetch }).upload(jsonFile());
+  assert.equal(ar.url, `ar://${fetch.calls[0].id}`);
+  const https = await createTurboUploader({ signer: BOTH, uri: "https", gateway: "https://example.com/", fetch }).upload(pngFile());
+  assert.equal(https.url, `https://example.com/${fetch.calls[1].id}`);
+});
+
+test("testnet uploads to the testnet service, and its gateway is ar-io.dev", async () => {
   const fetch = service({ testnet: true });
   const res = await createTurboUploader({ signer: BOTH, testnet: true, fetch }).upload(jsonFile());
   assert.deepEqual(fetch.calls.map((c) => c.origin), [TESTNET.uploadUrl]);
-  assert.equal(res.url, `ar://${fetch.calls[0].id}`);
+  assert.equal(res.url, `https://ar-io.dev/${fetch.calls[0].id}`);
+});
+
+test("testnet x402 posts to the testnet service and pays on Base Sepolia", async () => {
+  const fetch = service({ testnet: true });
+  const seen = [];
+  const signer = { address: account.address, signTypedData: async (t) => (seen.push(t), account.signTypedData(t)) };
+  await createTurboUploader({ signer, testnet: true, maxUsdc: 50_000n, fetch }).upload(jsonFile());
+  assert.deepEqual(fetch.calls.map((c) => c.origin), [TESTNET.uploadUrl, TESTNET.uploadUrl]);
+  assert.equal(seen[0].domain.chainId, 84532);
 });
 
 /* ------------------------------- Content-Type ------------------------------- */
@@ -450,7 +495,9 @@ test("timeout 0 is no timeout, and a negative timeout is refused", async () => {
   const uploader = createTurboUploader({ signer: BOTH, fetch });
   await uploader.upload(jsonFile(), { timeout: 0 });
   assert.deepEqual(fetch.paths(), ["/v1/tx"]);
-  await assert.rejects(uploader.upload(jsonFile(), { timeout: -1 }), { name: "TurboConfigError", message: /timeout/ });
+  for (const timeout of [-1, 2 ** 32, Infinity, NaN]) {
+    await assert.rejects(uploader.upload(jsonFile(), { timeout }), { name: "TurboConfigError", message: /from 0 \(none\) to 4294967295/ }, String(timeout));
+  }
 });
 
 test("timeout bounds the whole upload", async () => {
@@ -479,4 +526,18 @@ test("the call in AGENTS.md and SKILL.md is an excerpt of the compiled quickstar
     assert.equal(blocks.length, 1, file);
     assert.ok(read("test", "types", "quickstart.ts").endsWith(blocks[0]), file);
   }
+});
+
+test("without AbortSignal.any, as in older browsers, signal and timeout still combine", async (t) => {
+  const any = AbortSignal.any;
+  AbortSignal.any = undefined;
+  t.after(() => {
+    AbortSignal.any = any;
+  });
+  const uploader = createTurboUploader({ signer: BOTH, fetch: hanging() });
+  const controller = new AbortController();
+  const pending = uploader.upload(jsonFile(), { signal: controller.signal, timeout: 60_000 });
+  setTimeout(() => controller.abort(), 30);
+  await assert.rejects(pending, { name: "TurboTimeoutError" });
+  await assert.rejects(uploader.upload(jsonFile(), { signal: new AbortController().signal, timeout: 50 }), { name: "TurboTimeoutError" });
 });

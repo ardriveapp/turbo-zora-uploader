@@ -33,9 +33,9 @@ import { createTurboUploader } from "@ardrive/turbo-zora-uploader";
 
 const account = privateKeyToAccount(process.env.PRIVATE_KEY as `0x${string}`);
 
-// Production by default: uploads are permanent and public. URLs are
-// ar://ITEM_ID. Small files are free. maxUsdc is the most one larger upload
-// may cost, in USDC base units (6 decimals): 500_000n is 0.50 USDC, on Base.
+// Production by default: uploads are permanent and public. Small files are
+// free. maxUsdc is the most one larger upload may cost, in USDC base units
+// (6 decimals): 500_000n is 0.50 USDC, on Base.
 const uploader = createTurboUploader({
   signer: { ...account, recoverPublicKey },
   maxUsdc: 500_000n,
@@ -48,15 +48,15 @@ const { createMetadataParameters } = await createMetadataBuilder()
   .withDescription("Metadata and image stored on Arweave")
   .withImage(new File([png], "coin.png", { type: "image/png" }))
   .upload(uploader);
+// The metadata pointer is https://turbo-gateway.com/ITEM_ID, because Zora's
+// create API takes only https or ipfs. The image inside it is ar://ITEM_ID,
+// which names no gateway.
 
 const { address, hash } = await createCoin({
   call: {
     ...createMetadataParameters,
     creator: account.address,
     currency: "ETH",
-    // Zora's SDK fetches ar:// through arweave.net, which can lag behind a
-    // fresh upload, so the metadata check is skipped.
-    skipMetadataValidation: true,
   },
   walletClient: createWalletClient({ account, chain: base, transport: http() }),
   publicClient: createPublicClient({ chain: base, transport: http() }),
@@ -147,28 +147,36 @@ with no setup. A larger file goes through x402 without code changes, as long as
 its price is within `maxUsdc`. To pay only with Turbo credits, set
 `mode: "signed"`. To pay for every upload with USDC, set `mode: "x402"`.
 
-## The URL it returns
+## The URLs it returns
 
-The uploader returns `ar://ITEM_ID` by default, and assumes no gateway. The
-coin's metadata then names its image as `ar://ITEM_ID` too, because
-`createMetadataBuilder` puts the uploader's URL into the metadata.
+By default (`uri: "auto"`), the uploader returns one of two URL forms:
 
-To get `https://GATEWAY/ITEM_ID` instead, pass `uri: "https"` with a `gateway`
-you choose. A gateway with a query or a fragment is refused, and so is
-`gateway` without `uri: "https"`.
+- **The metadata JSON:** `https://turbo-gateway.com/ITEM_ID`. This is the
+  coin's metadata pointer. Zora's create API takes only an `https://` or
+  `ipfs://` pointer, and refuses `ar://`.
+- **Everything else, such as the image or other media:** `ar://ITEM_ID`,
+  which names no gateway, so any Arweave gateway can serve it.
 
-## Zora's metadata check and ar://
+The uploader tells the two apart by `file.type`: `application/json` is the
+metadata. Zora's `createMetadataBuilder` uploads the metadata as a `File` of
+that type, and writes the URL it gets for the image into the metadata's
+`image` field. How Zora's apps display `ar://` media is not verified here.
 
-Before `createCoin` creates a coin, Zora's SDK fetches the metadata URI and
-checks it. It fetches an `ar://` URI through `http://arweave.net/`, which can
-lag behind a fresh upload, and `createCoin` fails until the item is served
-there. So the quickstart sets `skipMetadataValidation: true` in the
-`createCoin` call.
+Before it creates a coin, Zora's SDK fetches the metadata pointer and checks
+it. The check passes only if the gateway serves a freshly uploaded item at
+once, with a content-type of exactly `application/json`. turbo-gateway.com did
+both on 2026-10-14: `scripts/live-mainnet-free.js` saw the check pass 1.2 s
+after a free upload. To use another gateway, pass `gateway`.
 
-To keep the check, pass `uri: "https"` with your own gateway. The check then
-passes without skipping, provided the gateway serves the metadata with a
-content-type of exactly `application/json`: Zora's SDK refuses anything else,
-including `application/json; charset=utf-8`.
+Two other forms are available:
+
+- **`uri: "https"`** returns the gateway URL for every file.
+- **`uri: "ar"`** returns `ar://ITEM_ID` for every file, including the
+  metadata. It cannot create a Zora coin, because Zora's create API refuses an
+  `ar://` pointer.
+
+A gateway with credentials, a space, a query or a fragment is refused, and so
+is `gateway` together with `uri: "ar"`.
 
 ## Testnet
 
@@ -190,8 +198,15 @@ const uploader = createTurboUploader({
 ```
 
 On testnet, signed items are free up to a larger size, x402 pays in Base
-Sepolia USDC, and nothing is permanent. URLs are `ar://ITEM_ID`, as on
-production, and Zora's metadata check is skipped the same way.
+Sepolia USDC, and nothing is permanent. Testnet items are served by
+`https://ar-io.dev`, the default gateway there. arweave.net does not serve
+them, because they are not on Arweave.
+
+The default testnet gateway does not pass Zora's metadata check: on
+2026-10-14, ar-io.dev served JSON as `application/json; charset=utf-8`, which
+the check refuses. So `createCoin` on Base Sepolia refuses metadata uploaded
+with `testnet: true`, unless you pass a `gateway` that serves testnet items as
+exactly `application/json`.
 
 ## Options
 
@@ -202,8 +217,8 @@ production, and Zora's metadata check is skipped the same way.
 | `signer` | Required | An EVM signer for one or both paths |
 | `mode` | `"auto"` | `"auto"`, `"signed"` or `"x402"` |
 | `maxUsdc` | None | USDC base units, for each upload. Required for x402, refused with `mode: "signed"` |
-| `uri` | `"ar"` | `"ar"` for `ar://ITEM_ID`, or `"https"` for `GATEWAY/ITEM_ID` |
-| `gateway` | None | Required with `uri: "https"`, and refused otherwise. https, with no query or fragment |
+| `uri` | `"auto"` | `"auto"`: the metadata JSON on the gateway, media as `ar://ITEM_ID`. `"https"`: everything on the gateway. `"ar"`: everything as `ar://ITEM_ID`, which cannot create a Zora coin |
+| `gateway` | `https://turbo-gateway.com`, or `https://ar-io.dev` on testnet | https, with no credentials, spaces, query or fragment. Refused with `uri: "ar"` |
 | `testnet` | `false` | Production when `false`: permanent and public |
 | `tags` | `[]` | `{ name, value }` strings, added to every item. The `Content-Type` tag comes from `file.type`, and a `Content-Type` here is refused. When the uploader can pay with x402, at most 3072 bytes, the most x402 carries |
 | `fetch` | The global `fetch` | A function, for tests and proxies |
@@ -211,10 +226,13 @@ production, and Zora's metadata check is skipped the same way.
 An unknown or invalid option throws `TurboConfigError` when the uploader is
 created. `null` counts as absent for every option.
 
+In a browser without `AbortSignal.any`, such as Safari before 17.4, the
+uploader combines `signal` and `timeout` itself.
+
 `upload(file, { signal, timeout })` honours both: `timeout` is a deadline for
 the whole upload in milliseconds, and 0 means none, as in the SDK's own
-uploader. A negative `timeout` throws `TurboConfigError`. Other
-errors come from `@ardrive/turbo-upload`. For more information, see
+uploader. A `timeout` that is negative, over 4294967295 or not a number throws
+`TurboConfigError`. Other errors come from `@ardrive/turbo-upload`. For more information, see
 [the turbo-upload errors reference](https://github.com/ardriveapp/turbo-upload#errors).
 
 ## License

@@ -49,6 +49,6 @@ const body = { name: "Example", description: "x402", image: "ar://EXAMPLE" };
 const metadata = new File([JSON.stringify(body)], "metadata.json", {
   type: "application/json",
 });
-// Returns ar://ITEM_ID, the default.
+// The metadata JSON gets a gateway URL; the testnet gateway is ar-io.dev.
 const { url } = await uploader.upload(metadata, { timeout: 180_000 });
 console.log("metadata", url);

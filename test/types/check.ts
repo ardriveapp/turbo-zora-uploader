@@ -34,7 +34,7 @@ createMetadataBuilder().withName("n").withSymbol("S").withDescription("d").uploa
 
 // @ts-expect-error mode is a closed set
 createTurboUploader({ signer: account, mode: "free" });
-// @ts-expect-error uri is "https" or "ar"
+// @ts-expect-error uri is "auto", "https" or "ar"
 createTurboUploader({ signer: account, uri: "ipfs", maxUsdc: 1 });
 // @ts-expect-error a signer is required
 createTurboUploader({ maxUsdc: 1 });
@@ -46,10 +46,9 @@ export { both, x402, ar, fromWallet, result };
 createTurboUploader({ signer: account, mode: "x402" });
 // @ts-expect-error gateway has no effect with uri "ar"
 createTurboUploader({ signer: account, maxUsdc: 1, uri: "ar", gateway: "https://example.com" });
-// @ts-expect-error uri "https" needs a gateway
-createTurboUploader({ signer: account, maxUsdc: 1, uri: "https" });
+const httpsDefault: Uploader = createTurboUploader({ signer: account, maxUsdc: 1, uri: "https" });
 // @ts-expect-error maxUsdc has no effect with mode "signed"
 createTurboUploader({ signer: { ...account, recoverPublicKey }, mode: "signed", maxUsdc: 1 });
 const https: Uploader = createTurboUploader({ signer: account, maxUsdc: 1, uri: "https", gateway: "https://example.com" });
 const nulls: Uploader = createTurboUploader({ signer: account, maxUsdc: 1, gateway: null });
-export { https, nulls };
+export { https, nulls, httpsDefault };

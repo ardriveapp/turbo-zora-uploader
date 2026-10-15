@@ -20,7 +20,27 @@ const {
 
 const OPTIONS = ["signer", "mode", "maxUsdc", "uri", "gateway", "testnet", "tags", "fetch"];
 const MODES = ["auto", "signed", "x402"];
-const URIS = ["https", "ar"];
+const URIS = ["auto", "ar", "https"];
+const MAX_TIMEOUT_MS = 2 ** 32 - 1;
+// An https URL with a host, an optional path, and no credentials, spaces, query or fragment.
+const GATEWAY = /^https:\/\/[^/?#@\s]+(\/[^?#\s]*)?$/i;
+
+/** The signals combined. AbortSignal.any is missing from older browsers, such as Safari before 17.4. */
+function anySignal(signals) {
+  if (typeof AbortSignal.any === "function") return AbortSignal.any(signals);
+  const controller = new AbortController();
+  for (const s of signals) {
+    if (s.aborted) {
+      controller.abort(s.reason);
+      break;
+    }
+    s.addEventListener("abort", () => controller.abort(s.reason), { once: true });
+  }
+  return controller.signal;
+}
+
+/** Whether a file is the coin's metadata JSON, which Zora's builder uploads as application/json. */
+const isJson = (file) => file.type.split(";")[0].trim().toLowerCase() === "application/json";
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const X402_MAX_TAG_BYTES = 3072;
 
@@ -39,15 +59,14 @@ function isBaseUnits(value) {
  */
 function createTurboUploader(options) {
   if (options === null || typeof options !== "object") throw configError("takes an options object with at least `signer`.");
+  // null means absent, for every option.
+  options = Object.fromEntries(Object.entries(options).filter(([, value]) => value !== null));
   const unknown = Object.keys(options).filter((k) => !OPTIONS.includes(k));
   if (unknown.length) throw configError(`unknown option ${unknown.map((k) => `\`${k}\``).join(", ")}. Accepted: ${OPTIONS.join(", ")}.`);
-  // null means absent, for every option.
-  const given = (key) => options[key] !== undefined && options[key] !== null;
-  const { signer, mode = "auto", uri = "ar", testnet = false, tags = [], fetch } = options;
-  const maxUsdc = given("maxUsdc") ? options.maxUsdc : undefined;
+  const { signer, mode = "auto", maxUsdc, uri = "auto", testnet = false, tags = [], fetch } = options;
 
   if (!MODES.includes(mode)) throw configError(`\`mode\` must be one of ${MODES.join(", ")}, got ${JSON.stringify(mode)}.`);
-  if (!URIS.includes(uri)) throw configError(`\`uri\` must be "https" or "ar", got ${JSON.stringify(uri)}.`);
+  if (!URIS.includes(uri)) throw configError(`\`uri\` must be "auto", "ar" or "https", got ${JSON.stringify(uri)}.`);
   if (typeof testnet !== "boolean") throw configError("`testnet` must be true or false.");
   if (fetch !== undefined && typeof fetch !== "function") throw configError("`fetch` must be a function.");
   if (maxUsdc !== undefined && !isBaseUnits(maxUsdc)) {
@@ -65,15 +84,16 @@ function createTurboUploader(options) {
   }
 
   const endpoints = testnet ? TESTNET : PRODUCTION;
-  // No gateway is assumed: an https URL names the gateway the caller chose.
-  if (uri === "ar" && given("gateway")) {
-    throw configError('`gateway` has no effect with uri "ar", the default. Pass uri "https" with it, or drop it.');
+  if (uri === "ar" && options.gateway !== undefined) {
+    throw configError('`gateway` has no effect with uri "ar". Drop one.');
   }
-  if (uri === "https" && (typeof options.gateway !== "string" || !/^https:\/\/[^/?#]+(\/[^?#]*)?$/i.test(options.gateway))) {
-    throw configError(`uri "https" needs \`gateway\`: an https:// URL with no query or fragment, got ${JSON.stringify(options.gateway)}.`);
+  if (options.gateway !== undefined && (typeof options.gateway !== "string" || !GATEWAY.test(options.gateway))) {
+    throw configError(`\`gateway\` must be an https:// URL with no credentials, spaces, query or fragment, got ${JSON.stringify(options.gateway)}.`);
   }
-  // Zora accepts a metadata URI only if it starts with "https://" in lower case.
-  const gateway = uri === "https" ? `https://${options.gateway.slice(8).replace(/\/+$/, "")}` : undefined;
+  // The production gateway serves a fresh item as exactly application/json,
+  // which Zora's metadata check needs. The testnet gateway adds a charset.
+  // Zora accepts an https URI only if it starts with "https://" in lower case.
+  const gateway = `https://${(options.gateway ?? endpoints.gatewayUrl).slice(8).replace(/\/+$/, "")}`;
 
   if (!signer || typeof signer !== "object") {
     throw configError("`signer` is required: an EVM account with signMessage and recoverPublicKey, signTypedData, or both.");
@@ -120,12 +140,12 @@ function createTurboUploader(options) {
 
   return {
     async upload(file, { signal, timeout } = {}) {
-      if (timeout !== undefined && !(typeof timeout === "number" && timeout >= 0 && Number.isFinite(timeout))) {
-        throw new TurboConfigError(`upload(): \`timeout\` must be a number of milliseconds, 0 or more (0 is none), got ${JSON.stringify(timeout)}.`);
+      if (timeout !== undefined && !(typeof timeout === "number" && timeout >= 0 && timeout <= MAX_TIMEOUT_MS)) {
+        throw new TurboConfigError(`upload(): \`timeout\` must be a number of milliseconds from 0 (none) to ${MAX_TIMEOUT_MS}, got ${String(timeout)}.`);
       }
       // As in the SDK's own uploader, 0 means no timeout.
       const signals = [signal, timeout ? AbortSignal.timeout(timeout) : undefined].filter(Boolean);
-      const bounded = signals.length > 1 ? AbortSignal.any(signals) : signals[0];
+      const bounded = signals.length > 1 ? anySignal(signals) : signals[0];
       bounded?.throwIfAborted();
 
       const data = new Uint8Array(await file.arrayBuffer());
@@ -162,7 +182,9 @@ function createTurboUploader(options) {
       }
 
       return {
-        url: uri === "ar" ? `ar://${id}` : `${gateway}/${id}`,
+        // Zora's create API takes only an https or ipfs metadata pointer, so
+        // the JSON is on the gateway; media stays ar://, which names no gateway.
+        url: uri === "https" || (uri === "auto" && isJson(file)) ? `${gateway}/${id}` : `ar://${id}`,
         size: file.size,
         mimeType: file.type || undefined,
       };
